@@ -86,6 +86,10 @@ spec:
             - name: INCIDENTPILOT_MCP_TOKEN
               valueFrom:
                 secretKeyRef: {name: incidentpilot-mcp-local-credential, key: token}
+            - {name: INCIDENTPILOT_REMEDIATION_ENDPOINT, value: "http://incidentpilot-api.incidentpilot-system.svc.cluster.local:8080/api/v1/remediations"}
+            - name: INCIDENTPILOT_REMEDIATION_TOKEN
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-local-credentials, key: remediation_token}
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
           ports:
             - {name: http, containerPort: 8081}

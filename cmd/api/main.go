@@ -15,6 +15,8 @@ import (
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/httpapi"
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/policy"
+	"incidentpilot/internal/remediation"
 	"incidentpilot/internal/storage"
 	"incidentpilot/internal/telemetry"
 )
@@ -37,9 +39,11 @@ func main() {
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	var store incident.Store
 	var evidenceStore evidence.Store
+	var postgres *storage.Postgres
+	var err error
 	if cfg.DatabaseURL != "" {
 		connectCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-		postgres, err := storage.Open(connectCtx, cfg.DatabaseURL)
+		postgres, err = storage.Open(connectCtx, cfg.DatabaseURL)
 		cancel()
 		if err != nil {
 			return err
@@ -73,8 +77,16 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		collector = &evidence.Collector{Caller: caller, Store: evidenceStore}
 	}
+	var remediator *remediation.Service
+	if cfg.RemediationToken != "" {
+		evaluator, err := policy.New(ctx)
+		if err != nil {
+			return err
+		}
+		remediator = &remediation.Service{Source: postgres, Store: postgres, Evaluator: evaluator, Config: remediation.Config{Environment: cfg.Environment, Repository: cfg.Repository, AllowedPath: cfg.RemediationPath}}
+	}
 	server := &http.Server{
-		Handler:           httpapi.HandlerWithEvidence(store, evidenceStore, collector, cfg.WebhookToken, logger),
+		Handler:           httpapi.HandlerWithServices(store, evidenceStore, collector, remediator, cfg.WebhookToken, cfg.RemediationToken, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	shutdownDone := make(chan struct{})

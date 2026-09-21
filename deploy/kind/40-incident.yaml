@@ -9,6 +9,7 @@ stringData:
   postgres_password: incidentpilot-local-dev-only
   database_url: postgres://incidentpilot:incidentpilot-local-dev-only@postgres.incidentpilot-system.svc.cluster.local:5432/incidentpilot?sslmode=disable
   webhook_token: incidentpilot-local-dev-token-v1
+  remediation_token: incidentpilot-remediation-local-dev-token-v1
 ---
 apiVersion: v1
 kind: Service
@@ -101,6 +102,12 @@ spec:
             - name: INCIDENTPILOT_MCP_TOKEN
               valueFrom:
                 secretKeyRef: {name: incidentpilot-mcp-local-credential, key: token}
+            - name: INCIDENTPILOT_REMEDIATION_TOKEN
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-local-credentials, key: remediation_token}
+            - {name: INCIDENTPILOT_ENVIRONMENT, value: development}
+            - {name: INCIDENTPILOT_REPOSITORY, value: YASHMAHAKAL/incident-pilot}
+            - {name: INCIDENTPILOT_REMEDIATION_PATH, value: deploy/kind/30-demo.yaml}
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
           ports:
             - {name: http, containerPort: 8080}

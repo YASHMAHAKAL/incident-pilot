@@ -34,6 +34,7 @@ type Hypothesis struct {
 type RootCause struct {
 	Conclusion  string   `json:"conclusion"`
 	Component   string   `json:"component"`
+	Cause       string   `json:"cause"`
 	EvidenceIDs []string `json:"evidence_ids"`
 }
 

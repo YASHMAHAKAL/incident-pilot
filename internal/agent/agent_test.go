@@ -148,7 +148,7 @@ func TestImagePullInvestigationUsesInitialEvidenceAndCitations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || len(report.RootCause.EvidenceIDs) != 3 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || report.RootCause.Cause != causeUnpullableImage || len(report.RootCause.EvidenceIDs) != 3 {
 		t.Fatalf("unexpected image-pull RCA: %+v", report)
 	}
 	if !strings.Contains(report.RootCause.Conclusion, "phase2-bad-image") || !strings.Contains(report.RootCause.Conclusion, "ImagePullBackOff") || collector.calls != 1 || provider.calls != 1 || !provider.schemaSeen {
@@ -192,7 +192,7 @@ func TestInvalidConfigInvestigationRequiresFourCorroboratingRecords(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || len(report.RootCause.EvidenceIDs) != 4 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || report.RootCause.Cause != causeInvalidOrderMode || len(report.RootCause.EvidenceIDs) != 4 {
 		t.Fatalf("unexpected invalid-config RCA: %+v", report)
 	}
 	if !strings.Contains(report.RootCause.Conclusion, "order_mode=unsupported") || !strings.Contains(report.RootCause.Conclusion, "CrashLoopBackOff") || collector.calls != 1 || provider.calls != 1 || !provider.schemaSeen {
@@ -236,7 +236,7 @@ func TestBrokenSelectorInvestigationRequiresRoutingAndSymptomEvidence(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || len(report.RootCause.EvidenceIDs) != 4 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causeBrokenSelector || len(report.RootCause.EvidenceIDs) != 4 {
 		t.Fatalf("unexpected broken-selector RCA: %+v", report)
 	}
 	if !strings.Contains(report.RootCause.Conclusion, "payments-api-disconnected") || !strings.Contains(report.RootCause.Conclusion, "pods remained ready") || collector.calls != 2 || provider.calls != 2 || !provider.schemaSeen {
@@ -291,7 +291,7 @@ func TestCPULatencyRequiresConfigurationMetricsAndSuccessfulSlowTrace(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || len(report.RootCause.EvidenceIDs) != 4 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || report.RootCause.Cause != causeExcessiveCPU || len(report.RootCause.EvidenceIDs) != 4 {
 		t.Fatalf("unexpected CPU-latency RCA: %+v", report)
 	}
 	if collector.chosen != "orders-api/success_latency_avg" || collector.calls != 2 || provider.calls != 2 || !strings.Contains(report.RootCause.Conclusion, "HTTP 200") {
@@ -332,7 +332,7 @@ func TestPaymentFailureRequiresModeErrorRateAndSingleDistributedTrace(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || len(report.RootCause.EvidenceIDs) != 3 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causePaymentFailure || len(report.RootCause.EvidenceIDs) != 3 {
 		t.Fatalf("unexpected payment-failure RCA: %+v", report)
 	}
 	if collector.chosen != "payments-api/error_rate" || collector.calls != 2 || provider.calls != 2 || !strings.Contains(report.RootCause.Conclusion, "HTTP 503") {
@@ -373,7 +373,7 @@ func TestOOMInvestigationUsesTargetedEvidenceAndCitations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || len(report.RootCause.EvidenceIDs) != 2 {
+	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causeMemoryLimitOOM || len(report.RootCause.EvidenceIDs) != 2 {
 		t.Fatalf("unexpected RCA: %+v", report)
 	}
 	if !strings.Contains(report.RootCause.Conclusion, "48Mi") || collector.chosen != "payments-api/heap_bytes" || collector.calls != 2 || provider.calls != 2 || report.LLMCalls != 2 || !provider.schemaSeen {

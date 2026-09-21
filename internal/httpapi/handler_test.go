@@ -14,6 +14,7 @@ import (
 
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/remediation"
 )
 
 func TestHealthz(t *testing.T) {
@@ -188,5 +189,54 @@ func TestEvidenceCollectionAPI(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "evidence") {
 		t.Fatalf("list returned %d: %s", response.Code, response.Body.String())
+	}
+}
+
+type fakeRemediator struct {
+	requests []remediation.Request
+	result   remediation.Result
+}
+
+func (fake *fakeRemediator) Request(_ context.Context, request remediation.Request) (remediation.Result, error) {
+	fake.requests = append(fake.requests, request)
+	return fake.result, nil
+}
+func (fake *fakeRemediator) Get(context.Context, string) (remediation.Result, error) {
+	return fake.result, nil
+}
+
+func TestRemediationAPIUsesSeparateAuthAndStrictJSON(t *testing.T) {
+	token := "remediation-token-at-least-24-bytes"
+	fake := &fakeRemediator{result: remediation.Result{
+		Proposal: remediation.Proposal{ID: "00000000-0000-0000-0000-000000000010"},
+		Decision: remediation.PolicyDecision{ID: "00000000-0000-0000-0000-000000000011"},
+		Audit:    remediation.AuditEvent{ID: "00000000-0000-0000-0000-000000000012"},
+	}}
+	handler := HandlerWithServices(nil, nil, nil, fake, "webhook-token", token, nil)
+	body := []byte(`{"incident_id":"00000000-0000-0000-0000-000000000001","investigation_id":"00000000-0000-0000-0000-000000000002","operation":"update_resource_limit","target":{"repository":"owner/repository","path":"deploy/kind/30-demo.yaml","namespace":"incidentpilot-demo","kind":"Deployment","name":"payments-api","container":"payments-api"},"change":{"field":"memory_limit","before":"48Mi","after":"128Mi"},"reason":"verified OOM","evidence_ids":["00000000-0000-0000-0000-000000000003"]}`)
+	for _, test := range []struct {
+		name, auth, contentType string
+		body                    []byte
+		want                    int
+	}{
+		{"unauthorized", "", "application/json", body, http.StatusUnauthorized},
+		{"webhook token rejected", "Bearer webhook-token", "application/json", body, http.StatusUnauthorized},
+		{"content type", "Bearer " + token, "text/plain", body, http.StatusUnsupportedMediaType},
+		{"unknown field", "Bearer " + token, "application/json", append(body[:len(body)-1], []byte(`,"extra":true}`)...), http.StatusBadRequest},
+		{"accepted", "Bearer " + token, "application/json", body, http.StatusCreated},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/remediations", bytes.NewReader(test.body))
+			request.Header.Set("Authorization", test.auth)
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("got %d want %d: %s", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("unexpected requests reaching service: %d", len(fake.requests))
 	}
 }

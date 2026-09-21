@@ -67,7 +67,20 @@ func main() {
 		logger.Error("change source config", "error", err)
 		return
 	}
-	server, err := investigation.NewServer(backend, os.Getenv("INCIDENTPILOT_MCP_TOKEN"), logger)
+	remediationEndpoint, remediationToken := os.Getenv("INCIDENTPILOT_REMEDIATION_ENDPOINT"), os.Getenv("INCIDENTPILOT_REMEDIATION_TOKEN")
+	if (remediationEndpoint == "") != (remediationToken == "") {
+		logger.Error("remediation config", "error", "endpoint and token must be set together")
+		return
+	}
+	var remediationClient investigation.RemediationRequester
+	if remediationEndpoint != "" {
+		remediationClient, err = investigation.NewRemediationClient(client, remediationEndpoint, remediationToken)
+		if err != nil {
+			logger.Error("remediation config", "error", err)
+			return
+		}
+	}
+	server, err := investigation.NewServerWithRemediation(backend, remediationClient, os.Getenv("INCIDENTPILOT_MCP_TOKEN"), logger)
 	if err != nil {
 		logger.Error("MCP config", "error", err)
 		return

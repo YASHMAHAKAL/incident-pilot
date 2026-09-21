@@ -14,6 +14,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"incidentpilot/internal/remediation"
 )
 
 type WorkloadInput struct {
@@ -81,13 +83,22 @@ type Result struct {
 }
 
 type Server struct {
-	backend Backend
-	token   string
-	logger  *slog.Logger
-	calls   metric.Int64Counter
+	backend    Backend
+	remediator RemediationRequester
+	token      string
+	logger     *slog.Logger
+	calls      metric.Int64Counter
+}
+
+type RemediationRequester interface {
+	Request(context.Context, remediation.Request) (remediation.Result, error)
 }
 
 func NewServer(backend Backend, token string, logger *slog.Logger) (*Server, error) {
+	return NewServerWithRemediation(backend, nil, token, logger)
+}
+
+func NewServerWithRemediation(backend Backend, remediator RemediationRequester, token string, logger *slog.Logger) (*Server, error) {
 	if len(token) < 24 {
 		return nil, errors.New("MCP bearer token must be at least 24 characters")
 	}
@@ -98,7 +109,7 @@ func NewServer(backend Backend, token string, logger *slog.Logger) (*Server, err
 	if err != nil {
 		return nil, err
 	}
-	return &Server{backend: backend, token: token, logger: logger, calls: calls}, nil
+	return &Server{backend: backend, remediator: remediator, token: token, logger: logger, calls: calls}, nil
 }
 
 func (s *Server) instrument(ctx context.Context, name string, f func(context.Context) (Result, error)) (*mcp.CallToolResult, Result, error) {
@@ -128,6 +139,7 @@ func (s *Server) instrument(ctx context.Context, name string, f func(context.Con
 func (s *Server) Handler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "incidentpilot-mcp", Version: "0.1.0"}, nil)
 	readonly := &mcp.ToolAnnotations{ReadOnlyHint: true}
+	nondestructive := false
 	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_deployment", Description: "Read an allowlisted demo Deployment in incidentpilot-demo.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_deployment", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Deployment(ctx, in.Workload)
@@ -266,6 +278,27 @@ func (s *Server) Handler() http.Handler {
 			return Result{Source: "github/diff", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
+	if s.remediator != nil {
+		mcp.AddTool(server, &mcp.Tool{
+			Name:        "request_remediation",
+			Description: "Submit one evidence-linked remediation proposal for trusted validation, OPA policy evaluation, and durable audit. This does not mutate Kubernetes or create a pull request.",
+			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &nondestructive, OpenWorldHint: &nondestructive},
+		}, func(ctx context.Context, _ *mcp.CallToolRequest, in remediation.Request) (*mcp.CallToolResult, remediation.Result, error) {
+			ctx, span := otel.Tracer("incidentpilot/mcp").Start(ctx, "mcp.request_remediation")
+			defer span.End()
+			started := time.Now()
+			result, err := s.remediator.Request(ctx, in)
+			status := "ok"
+			if err != nil {
+				status = "error"
+				span.RecordError(err)
+			}
+			span.SetAttributes(attribute.String("mcp.tool", "request_remediation"), attribute.String("mcp.status", status))
+			s.calls.Add(ctx, 1, metric.WithAttributes(attribute.String("tool", "request_remediation"), attribute.String("status", status)))
+			s.logger.InfoContext(ctx, "mcp tool", "tool", "request_remediation", "status", status, "duration_ms", time.Since(started).Milliseconds())
+			return nil, result, err
+		})
+	}
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })

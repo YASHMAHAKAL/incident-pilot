@@ -109,6 +109,7 @@ func verifyExcessiveCPU(records []evidence.Record, cited []string) *RootCause {
 	return &RootCause{
 		Conclusion:  "orders-api was configured with DEMO_ORDER_CPU_BURN_MS=1000, producing at least 900 ms orders spans and elevated successful request latency while checkout still returned HTTP 200",
 		Component:   "orders-api",
+		Cause:       causeExcessiveCPU,
 		EvidenceIDs: []string{deploymentID, frontendMetricID, ordersMetricID, traceID},
 	}
 }
@@ -141,6 +142,7 @@ func verifyPaymentFailure(records []evidence.Record, cited []string) *RootCause 
 	return &RootCause{
 		Conclusion:  "payments-api was configured with DEMO_PAYMENT_MODE=fail; one distributed trace records the originating payment HTTP 503 error and propagated orders-api and frontend HTTP 502 errors",
 		Component:   "payments-api",
+		Cause:       causePaymentFailure,
 		EvidenceIDs: []string{deploymentID, traceID, metricID},
 	}
 }
@@ -264,6 +266,7 @@ func verifyOOM(records []evidence.Record, cited []string) *RootCause {
 	return &RootCause{
 		Conclusion:  fmt.Sprintf("payments-api was OOMKilled while its Deployment memory limit was %s; the limit did not sustain the workload", memoryLimit),
 		Component:   "payments-api",
+		Cause:       causeMemoryLimitOOM,
 		EvidenceIDs: []string{podID, deploymentID},
 	}
 }
@@ -310,6 +313,7 @@ func verifyImagePull(records []evidence.Record, cited []string) *RootCause {
 	return &RootCause{
 		Conclusion:  fmt.Sprintf("orders-api Deployment references image %s with pull policy Always; its new pod entered %s after Kubernetes failed to pull that image", configured.Image, failedPod.Reason),
 		Component:   "orders-api",
+		Cause:       causeUnpullableImage,
 		EvidenceIDs: []string{podRecordID, deploymentRecordID, eventRecordID},
 	}
 }
@@ -454,6 +458,7 @@ func verifyInvalidOrderConfig(records []evidence.Record, cited []string) *RootCa
 	return &RootCause{
 		Conclusion:  fmt.Sprintf("orders-api consumed orders-config key order_mode=unsupported through DEMO_ORDER_MODE; pod %s entered CrashLoopBackOff and logged an invalid order mode", failedPod),
 		Component:   "orders-api",
+		Cause:       causeInvalidOrderMode,
 		EvidenceIDs: []string{configID, deploymentID, podID, logID},
 	}
 }
@@ -566,6 +571,7 @@ func verifyBrokenServiceSelector(records []evidence.Record, cited []string) *Roo
 	return &RootCause{
 		Conclusion:  "payments-api Service selector app=payments-api-disconnected matched no endpoint addresses while payments-api pods remained ready, causing frontend upstream errors",
 		Component:   "payments-api",
+		Cause:       causeBrokenSelector,
 		EvidenceIDs: []string{serviceID, endpointID, podID, metricID},
 	}
 }

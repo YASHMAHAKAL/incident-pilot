@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,12 +16,16 @@ const (
 )
 
 type Config struct {
-	HTTPAddr        string
-	ShutdownTimeout time.Duration
-	DatabaseURL     string
-	WebhookToken    string
-	MCPEndpoint     string
-	MCPToken        string
+	HTTPAddr         string
+	ShutdownTimeout  time.Duration
+	DatabaseURL      string
+	WebhookToken     string
+	MCPEndpoint      string
+	MCPToken         string
+	RemediationToken string
+	Environment      string
+	Repository       string
+	RemediationPath  string
 }
 
 func Load() (Config, error) {
@@ -48,6 +53,10 @@ func Parse(getenv func(string) string) (Config, error) {
 	cfg.WebhookToken = getenv("INCIDENTPILOT_WEBHOOK_TOKEN")
 	cfg.MCPEndpoint = getenv("INCIDENTPILOT_MCP_ENDPOINT")
 	cfg.MCPToken = getenv("INCIDENTPILOT_MCP_TOKEN")
+	cfg.RemediationToken = getenv("INCIDENTPILOT_REMEDIATION_TOKEN")
+	cfg.Environment = getenv("INCIDENTPILOT_ENVIRONMENT")
+	cfg.Repository = getenv("INCIDENTPILOT_REPOSITORY")
+	cfg.RemediationPath = getenv("INCIDENTPILOT_REMEDIATION_PATH")
 	if (cfg.DatabaseURL == "") != (cfg.WebhookToken == "") {
 		return Config{}, fmt.Errorf("INCIDENTPILOT_DATABASE_URL and INCIDENTPILOT_WEBHOOK_TOKEN must be set together")
 	}
@@ -69,6 +78,16 @@ func Parse(getenv func(string) string) (Config, error) {
 			return Config{}, fmt.Errorf("INCIDENTPILOT_MCP_TOKEN must be at least 24 bytes")
 		}
 	}
+	remediationValues := []string{cfg.RemediationToken, cfg.Environment, cfg.Repository, cfg.RemediationPath}
+	remediationConfigured := false
+	for _, value := range remediationValues {
+		remediationConfigured = remediationConfigured || value != ""
+	}
+	if remediationConfigured {
+		if len(cfg.RemediationToken) < 24 || cfg.DatabaseURL == "" || cfg.Environment == "" || !repositoryName(cfg.Repository) || !repositoryPath(cfg.RemediationPath) {
+			return Config{}, fmt.Errorf("remediation requires PostgreSQL, a 24-byte token, environment, owner/repository, and safe repository path")
+		}
+	}
 
 	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
 	if err != nil {
@@ -79,4 +98,33 @@ func Parse(getenv func(string) string) (Config, error) {
 		return Config{}, fmt.Errorf("INCIDENTPILOT_HTTP_ADDR must use a port from 1 to 65535")
 	}
 	return cfg, nil
+}
+
+func repositoryName(value string) bool {
+	parts := strings.Split(value, "/")
+	return len(parts) == 2 && dnsRepositoryPart(parts[0]) && dnsRepositoryPart(parts[1])
+}
+
+func dnsRepositoryPart(value string) bool {
+	if value == "" || len(value) > 100 {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '-' || char == '_' || char == '.') {
+			return false
+		}
+	}
+	return true
+}
+
+func repositoryPath(value string) bool {
+	if value == "" || len(value) > 256 || strings.Contains(value, "..") || strings.HasPrefix(value, "/") {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("_./-", char)) {
+			return false
+		}
+	}
+	return true
 }

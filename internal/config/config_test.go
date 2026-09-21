@@ -71,3 +71,25 @@ func TestParseMCPConfiguration(t *testing.T) {
 		t.Fatal("invalid MCP endpoint accepted")
 	}
 }
+
+func TestParseRemediationConfiguration(t *testing.T) {
+	values := map[string]string{
+		"INCIDENTPILOT_DATABASE_URL":      "postgres://localhost/example",
+		"INCIDENTPILOT_WEBHOOK_TOKEN":     "long-local-test-token",
+		"INCIDENTPILOT_REMEDIATION_TOKEN": "long-local-remediation-token",
+		"INCIDENTPILOT_ENVIRONMENT":       "development",
+		"INCIDENTPILOT_REPOSITORY":        "owner/repository",
+		"INCIDENTPILOT_REMEDIATION_PATH":  "deploy/kind/30-demo.yaml",
+	}
+	if _, err := Parse(func(key string) string { return values[key] }); err != nil {
+		t.Fatal(err)
+	}
+	values["INCIDENTPILOT_REMEDIATION_PATH"] = "../secret"
+	if _, err := Parse(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("unsafe remediation path accepted")
+	}
+	delete(values, "INCIDENTPILOT_REMEDIATION_PATH")
+	if _, err := Parse(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("partial remediation configuration accepted")
+	}
+}

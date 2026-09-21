@@ -3,6 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
+COPY policies/ ./policies/
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /incidentpilot-api ./cmd/api
 
 FROM scratch

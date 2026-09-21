@@ -22,9 +22,11 @@ import (
 
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/remediation"
 )
 
 const maxWebhookBytes = 256 << 10
+const maxRemediationBytes = 32 << 10
 
 var (
 	fingerprintPattern = regexp.MustCompile(`^[0-9a-fA-F]{16}$`)
@@ -45,10 +47,19 @@ type webhookPayload struct {
 }
 
 func Handler(store incident.Store, webhookToken string, logger *slog.Logger) http.Handler {
-	return HandlerWithEvidence(store, nil, nil, webhookToken, logger)
+	return HandlerWithServices(store, nil, nil, nil, webhookToken, "", logger)
 }
 
 func HandlerWithEvidence(store incident.Store, evidenceStore evidence.Store, collector *evidence.Collector, webhookToken string, logger *slog.Logger) http.Handler {
+	return HandlerWithServices(store, evidenceStore, collector, nil, webhookToken, "", logger)
+}
+
+type Remediator interface {
+	Request(context.Context, remediation.Request) (remediation.Result, error)
+	Get(context.Context, string) (remediation.Result, error)
+}
+
+func HandlerWithServices(store incident.Store, evidenceStore evidence.Store, collector *evidence.Collector, remediator Remediator, webhookToken, remediationToken string, logger *slog.Logger) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -235,6 +246,75 @@ func HandlerWithEvidence(store incident.Store, evidenceStore evidence.Store, col
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"evidence": records})
+	})
+	mux.HandleFunc("POST /api/v1/remediations", func(w http.ResponseWriter, r *http.Request) {
+		ctx, span := otel.Tracer("incidentpilot/api").Start(r.Context(), "remediation.receive")
+		defer span.End()
+		if !authorized(r, remediationToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if remediator == nil {
+			http.Error(w, "remediation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRemediationBytes))
+		decoder.DisallowUnknownFields()
+		var request remediation.Request
+		if err := decoder.Decode(&request); err != nil {
+			http.Error(w, "invalid remediation JSON body", http.StatusBadRequest)
+			return
+		}
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			http.Error(w, "unexpected data after remediation JSON body", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		result, err := remediator.Request(ctx, request)
+		if errors.Is(err, remediation.ErrInvalidProposal) {
+			http.Error(w, "invalid remediation proposal", http.StatusUnprocessableEntity)
+			return
+		}
+		if err != nil {
+			logger.ErrorContext(ctx, "remediation request failed", "incident_id", request.IncidentID, "error", err)
+			http.Error(w, "remediation evaluation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusCreated, result)
+	})
+	mux.HandleFunc("GET /api/v1/remediations/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(r, remediationToken) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if remediator == nil {
+			http.Error(w, "remediation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		id := r.PathValue("id")
+		if _, err := uuid.Parse(id); err != nil {
+			http.Error(w, "invalid remediation ID", http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		result, err := remediator.Get(ctx, id)
+		if errors.Is(err, incident.ErrNotFound) {
+			http.Error(w, "remediation not found", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			http.Error(w, "remediation storage unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
 	})
 	return otelhttp.NewHandler(mux, "incidentpilot.api")
 }
