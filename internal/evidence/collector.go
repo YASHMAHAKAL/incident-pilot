@@ -26,13 +26,20 @@ type planItem struct {
 }
 
 func (c Collector) Collect(ctx context.Context, inc incident.Incident) (Report, error) {
-	return c.collect(ctx, inc, inc.Service, "error_rate", true)
+	return c.collect(ctx, inc, inc.Service, initialMetric(inc), true)
+}
+
+func initialMetric(inc incident.Incident) string {
+	if inc.AlertName == "DemoCheckoutLatency" {
+		return "success_latency_avg"
+	}
+	return "error_rate"
 }
 
 // CollectTarget gathers the same bounded evidence for a validated downstream
 // demo workload. It is the only targeted collection operation the agent uses.
 func (c Collector) CollectTarget(ctx context.Context, inc incident.Incident, workload, metric string) (Report, error) {
-	if metric != "error_rate" && metric != "heap_bytes" {
+	if metric != "error_rate" && metric != "heap_bytes" && metric != "success_latency_avg" {
 		return Report{}, ErrUnsupportedIncident
 	}
 	return c.collect(ctx, inc, workload, metric, false)
@@ -63,13 +70,19 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 	startValue, endValue := start.Format(time.RFC3339), end.Format(time.RFC3339)
 	plan := []planItem{
 		{tool: "kubernetes_get_deployment", source: "kubernetes/deployment", arguments: map[string]any{"workload": workload}},
+	}
+	if workload == "orders-api" {
+		plan = append(plan, planItem{tool: "kubernetes_get_orders_config", source: "kubernetes/configmap", resourceRef: "incidentpilot-demo/configmap/orders-config", arguments: map[string]any{}})
+	}
+	plan = append(plan, []planItem{
 		{tool: "kubernetes_get_service", source: "kubernetes/service", arguments: map[string]any{"workload": workload}},
+		{tool: "kubernetes_get_endpointslices", source: "kubernetes/endpointslices", arguments: map[string]any{"workload": workload}},
 		{tool: "kubernetes_get_pods", source: "kubernetes/pods", arguments: map[string]any{"workload": workload}},
 		{tool: "kubernetes_get_events", source: "kubernetes/events", arguments: map[string]any{"workload": workload}},
 		{tool: "prometheus_get_demo_metric_range", source: "prometheus/range", arguments: map[string]any{"workload": workload, "metric": metric, "start": startValue, "end": endValue}, timed: true},
 		{tool: "loki_get_demo_logs", source: "loki", arguments: map[string]any{"workload": workload, "start": startValue, "end": endValue, "limit": 20}, timed: true},
-		{tool: "tempo_search_demo_traces", source: "tempo/search", arguments: map[string]any{"workload": workload, "start": startValue, "end": endValue}, timed: true},
-	}
+		{tool: "tempo_search_demo_traces", source: "tempo/search", arguments: map[string]any{"workload": workload, "filter": incidentTraceFilter(inc), "start": startValue, "end": endValue}, timed: true},
+	}...)
 	for _, item := range plan {
 		observation, callErr := c.Caller.Call(ctx, item.tool, item.arguments)
 		if callErr != nil {
@@ -82,6 +95,19 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 			continue
 		}
 		report.Evidence = append(report.Evidence, record)
+		if item.tool == "kubernetes_get_pods" && workload == "orders-api" {
+			if pod := crashLoopPod(record.Payload, workload); pod != "" {
+				logItem := planItem{tool: "kubernetes_get_pod_logs", source: "kubernetes/pod_logs", resourceRef: inc.Namespace + "/" + pod, arguments: map[string]any{"workload": workload, "pod": pod, "lines": 20}}
+				logObservation, logErr := c.Caller.Call(ctx, logItem.tool, logItem.arguments)
+				if logErr != nil {
+					report.Failures = append(report.Failures, Failure{Tool: logItem.tool, Reason: "tool call failed"})
+				} else if logRecord, err := makeRecord(inc, collectionID, workload, logItem, logObservation, start, end); err != nil {
+					report.Failures = append(report.Failures, Failure{Tool: logItem.tool, Reason: "invalid tool result"})
+				} else {
+					report.Evidence = append(report.Evidence, logRecord)
+				}
+			}
+		}
 		if item.tool == "tempo_search_demo_traces" {
 			if traceID := firstTraceID(record.Payload); traceID != "" {
 				traceItem := planItem{tool: "tempo_get_trace", source: "tempo", arguments: map[string]any{"trace_id": traceID}, timed: true}
@@ -109,15 +135,30 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 	return report, nil
 }
 
+func incidentTraceFilter(inc incident.Incident) string {
+	switch inc.AlertName {
+	case "DemoCheckoutLatency":
+		return "slow_success"
+	case "DemoCheckoutErrors":
+		return "error"
+	default:
+		return ""
+	}
+}
+
 func allowedWorkload(name string) bool {
 	return name == "frontend" || name == "orders-api" || name == "payments-api"
 }
 
 func makeRecord(inc incident.Incident, collectionID, workload string, item planItem, obs ToolObservation, start, end time.Time) (Record, error) {
-	if obs.Source != item.source || obs.CollectedAt.IsZero() || len(obs.Data) == 0 || !json.Valid(obs.Data) {
+	raw := obs.Data
+	if len(raw) == 0 && obs.Text != "" {
+		raw, _ = json.Marshal(map[string]string{"text": obs.Text})
+	}
+	if obs.Source != item.source || obs.CollectedAt.IsZero() || len(raw) == 0 || !json.Valid(raw) {
 		return Record{}, errors.New("missing or mismatched tool provenance")
 	}
-	payload, err := redactPayload(compactPayload(item.tool, obs.Data))
+	payload, err := redactPayload(compactPayload(item.tool, raw))
 	if err != nil {
 		return Record{}, err
 	}
@@ -145,6 +186,49 @@ func makeRecord(inc incident.Incident, collectionID, workload string, item planI
 		record.TraceID, _ = item.arguments["trace_id"].(string)
 	}
 	return record, nil
+}
+
+func crashLoopPod(raw json.RawMessage, workload string) string {
+	var pods struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				ContainerStatuses []struct {
+					Name  string `json:"name"`
+					State struct {
+						Waiting struct {
+							Reason string `json:"reason"`
+						} `json:"waiting"`
+					} `json:"state"`
+				} `json:"containerStatuses"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(raw, &pods) != nil {
+		return ""
+	}
+	for _, pod := range pods.Items {
+		for _, status := range pod.Status.ContainerStatuses {
+			if status.Name == workload && status.State.Waiting.Reason == "CrashLoopBackOff" && validPodName(pod.Metadata.Name, workload) {
+				return pod.Metadata.Name
+			}
+		}
+	}
+	return ""
+}
+
+func validPodName(name, workload string) bool {
+	if !strings.HasPrefix(name, workload+"-") || len(name) > 63 {
+		return false
+	}
+	for _, char := range name {
+		if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 func evidenceResourceRef(tool string, payload json.RawMessage, fallback string) string {
@@ -322,15 +406,32 @@ func summarize(tool string, raw json.RawMessage, incidentEnd time.Time) string {
 	switch tool {
 	case "kubernetes_get_deployment":
 		return fmt.Sprintf("Deployment replicas: desired %s, available %s", number(nested(obj, "spec", "replicas")), number(nested(obj, "status", "availableReplicas")))
+	case "kubernetes_get_orders_config":
+		return "Allowlisted orders-config order_mode returned"
 	case "kubernetes_get_service":
 		selector, _ := nested(obj, "spec", "selector").(map[string]any)
 		return fmt.Sprintf("Service selector has %d labels", len(selector))
+	case "kubernetes_get_endpointslices":
+		items, _ := obj["items"].([]any)
+		addresses := 0
+		for _, item := range items {
+			entry, _ := item.(map[string]any)
+			endpoints, _ := entry["endpoints"].([]any)
+			for _, endpoint := range endpoints {
+				value, _ := endpoint.(map[string]any)
+				found, _ := value["addresses"].([]any)
+				addresses += len(found)
+			}
+		}
+		return fmt.Sprintf("EndpointSlices: %d, addresses: %d", len(items), addresses)
 	case "kubernetes_get_pods":
 		items, _ := obj["items"].([]any)
 		return fmt.Sprintf("%d workload pods returned", len(items))
 	case "kubernetes_get_events":
 		items, _ := obj["items"].([]any)
 		return fmt.Sprintf("%d workload events returned", len(items))
+	case "kubernetes_get_pod_logs":
+		return "20 bounded lines returned from observed CrashLoopBackOff pod"
 	case "prometheus_get_demo_metric_range":
 		items, _ := obj["result"].([]any)
 		points := 0
@@ -339,7 +440,7 @@ func summarize(tool string, raw json.RawMessage, incidentEnd time.Time) string {
 			values, _ := m["values"].([]any)
 			points += len(values)
 		}
-		return fmt.Sprintf("Error-rate series: %d, samples: %d", len(items), points)
+		return fmt.Sprintf("Metric series: %d, samples: %d", len(items), points)
 	case "loki_get_demo_logs":
 		items, _ := obj["result"].([]any)
 		entries := 0

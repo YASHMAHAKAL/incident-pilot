@@ -8,4 +8,4 @@ make scenario-downstream-failure-check
 make scenario-downstream-failure-reset
 ```
 
-Run these from the repository root after `make kind-up`. Check waits for payment-failure logs and failed checkouts. Inspect a `trace_id` from a payment log in Tempo to see payment, orders, and frontend spans together. Reset restores normal payment behavior and waits for rollout. Always reset after injection. The [ground truth](ground-truth.yaml) records the expected cause and trace evidence.
+Run these from the repository root after `make kind-up`. Check waits for payment-failure logs and failed checkouts. `DemoCheckoutErrors` creates a frontend incident. The one-shot investigator requires the payments Deployment failure mode, a positive frontend error rate, and one distributed trace containing the originating payment HTTP 503 plus propagated orders and frontend HTTP 502 errors before trusted code emits `payment_processor_failure_mode_enabled`. Reset restores normal payment behavior and waits for rollout. Always reset after injection. The [ground truth](ground-truth.yaml) records the expected cause and trace evidence.

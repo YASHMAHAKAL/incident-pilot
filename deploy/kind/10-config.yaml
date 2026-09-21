@@ -71,6 +71,9 @@ data:
       - job_name: incidentpilot-demo
         static_configs:
           - targets: [otel-collector.incidentpilot-observability.svc.cluster.local:8889]
+      - job_name: kube-state-metrics
+        static_configs:
+          - targets: [kube-state-metrics.incidentpilot-observability.svc.cluster.local:8080]
   rules.yml: |
     groups:
       - name: incidentpilot-demo
@@ -84,6 +87,33 @@ data:
               severity: warning
             annotations:
               summary: Demo checkout is failing on upstream calls
+          - alert: DemoCheckoutLatency
+            expr: sum(increase(demo_request_duration_seconds_sum{service_name="frontend",role="frontend",outcome="success"}[30s])) / sum(increase(demo_request_duration_seconds_count{service_name="frontend",role="frontend",outcome="success"}[30s])) > 0.75
+            for: 10s
+            labels:
+              namespace: incidentpilot-demo
+              service: frontend
+              severity: warning
+            annotations:
+              summary: Successful demo checkout latency is elevated
+          - alert: DemoImagePullBackOff
+            expr: max by (namespace, container) (kube_pod_container_status_waiting_reason{namespace="incidentpilot-demo",container="orders-api",reason=~"ErrImagePull|ImagePullBackOff"}) > 0
+            for: 10s
+            labels:
+              namespace: incidentpilot-demo
+              service: orders-api
+              severity: warning
+            annotations:
+              summary: orders-api cannot pull its configured container image
+          - alert: DemoInvalidOrderConfig
+            expr: max by (namespace, container) (kube_pod_container_status_waiting_reason{namespace="incidentpilot-demo",container="orders-api",reason="CrashLoopBackOff"}) > 0
+            for: 10s
+            labels:
+              namespace: incidentpilot-demo
+              service: orders-api
+              severity: warning
+            annotations:
+              summary: orders-api is repeatedly failing during startup
 ---
 apiVersion: v1
 kind: ConfigMap

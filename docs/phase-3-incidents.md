@@ -1,6 +1,6 @@
 # Phase 3: alert-driven incidents
 
-The local signal path is:
+The local signal paths are:
 
 ```text
 demo checkout error metric
@@ -8,9 +8,29 @@ demo checkout error metric
 -> Alertmanager webhook
 -> incidentpilot-api
 -> PostgreSQL incident
+
+orders-api pod waiting state
+-> kube-state-metrics
+-> Prometheus DemoImagePullBackOff rule
+-> Alertmanager webhook
+-> incidentpilot-api
+-> PostgreSQL incident
+
+orders-api CrashLoopBackOff state
+-> kube-state-metrics
+-> Prometheus DemoInvalidOrderConfig rule
+-> Alertmanager webhook
+-> incidentpilot-api
+-> PostgreSQL incident
+
+successful frontend request duration
+-> Prometheus DemoCheckoutLatency rule
+-> Alertmanager webhook
+-> incidentpilot-api
+-> PostgreSQL incident
 ```
 
-`make kind-up` deploys this path to the dedicated `kind-incidentpilot` cluster. Prometheus scrapes every 10 seconds and evaluates the rule every 10 seconds. The rule fires after sustained frontend upstream errors; it does not yet cover every Phase 2 fault. Alertmanager delivers firing and resolved notifications. The API stores the validated alert identity and status, not the raw annotations or webhook body. It deduplicates retries by `(fingerprint, started_at)`; a replayed firing notification cannot reopen a resolved incident. A new alert episode with a new start time gets a new incident. PostgreSQL uses a local 1 GiB PVC, so records survive API and PostgreSQL pod restarts but are removed with the kind cluster.
+`make kind-up` deploys these paths to the dedicated `kind-incidentpilot` cluster. Prometheus scrapes every 10 seconds and evaluates rules every 10 seconds. The rules detect sustained frontend upstream errors, elevated successful checkout latency, orders-api image-pull failures, and orders-api startup crash loops. Together these signals cover all six Phase 2 fixtures; several failure modes intentionally share the checkout-error signal and are separated during investigation. Alertmanager delivers firing and resolved notifications. The API stores the validated alert identity and status, not the raw annotations or webhook body. It deduplicates retries by `(fingerprint, started_at)`; a replayed firing notification cannot reopen a resolved incident. A new alert episode with a new start time gets a new incident. PostgreSQL uses a local 1 GiB PVC, so records survive API and PostgreSQL pod restarts but are removed with the kind cluster.
 
 To reproduce the end-to-end path after `make kind-up`:
 

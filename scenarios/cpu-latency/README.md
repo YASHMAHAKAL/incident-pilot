@@ -8,4 +8,4 @@ make scenario-cpu-latency-check
 make scenario-cpu-latency-reset
 ```
 
-Run these from the repository root after `make kind-up`. Check waits for a successful order request logged with at least 900 ms duration. `demo_request_duration_seconds` and the order span provide telemetry evidence. Reset restores zero work and waits for rollout. Always reset after injection. The [ground truth](ground-truth.yaml) describes the intended evidence and cause.
+Run these from the repository root after `make kind-up`. Check waits for a successful order request logged with at least 900 ms duration. The `DemoCheckoutLatency` rule creates a frontend incident from the fixed successful-request latency average. The one-shot investigator requires the orders Deployment setting, frontend and orders latency series, and one successful slow distributed trace before trusted code emits `excessive_cpu_work_per_order`. Reset restores zero work and waits for rollout. Always reset after injection. The [ground truth](ground-truth.yaml) describes the intended evidence and cause.

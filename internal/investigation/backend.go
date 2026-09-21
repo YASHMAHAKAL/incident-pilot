@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // Backend contains only fixed, read-only upstreams. No tool accepts an URL or query language.
@@ -87,7 +88,87 @@ func (b Backend) Deployment(ctx context.Context, name string) (json.RawMessage, 
 		return nil, errors.New("unknown demo workload")
 	}
 	raw, err := b.get(ctx, b.Kubernetes, "/apis/apps/v1/namespaces/"+namespace+"/deployments/"+name, nil, true, 256<<10)
-	return sanitizeKubernetes(raw, err)
+	if err != nil {
+		return nil, err
+	}
+	clean, err := sanitizeKubernetes(raw, nil)
+	if err != nil {
+		return clean, err
+	}
+	return addDiagnosticDeploymentConfig(clean, raw, name)
+}
+
+func addDiagnosticDeploymentConfig(clean, raw json.RawMessage, workloadName string) (json.RawMessage, error) {
+	var deployment struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Name string `json:"name"`
+						Env  []struct {
+							Name      string `json:"name"`
+							Value     string `json:"value"`
+							ValueFrom struct {
+								ConfigMapKeyRef struct {
+									Name string `json:"name"`
+									Key  string `json:"key"`
+								} `json:"configMapKeyRef"`
+							} `json:"valueFrom"`
+						} `json:"env"`
+					} `json:"containers"`
+				} `json:"spec"`
+			} `json:"template"`
+		} `json:"spec"`
+	}
+	var projected map[string]any
+	if json.Unmarshal(raw, &deployment) != nil || json.Unmarshal(clean, &projected) != nil {
+		return nil, errors.New("invalid Deployment response")
+	}
+	var runtime []map[string]string
+	for _, container := range deployment.Spec.Template.Spec.Containers {
+		if container.Name != workloadName {
+			continue
+		}
+		for _, variable := range container.Env {
+			ref := variable.ValueFrom.ConfigMapKeyRef
+			if workloadName == "orders-api" && variable.Name == "DEMO_ORDER_MODE" && ref.Name == "orders-config" && ref.Key == "order_mode" {
+				projected["diagnosticConfigReferences"] = []map[string]string{{"container": "orders-api", "environmentVariable": "DEMO_ORDER_MODE", "configMap": "orders-config", "key": "order_mode"}}
+			}
+			if workloadName == "orders-api" && variable.Name == "DEMO_ORDER_CPU_BURN_MS" && (variable.Value == "0" || variable.Value == "1000") {
+				runtime = append(runtime, map[string]string{"container": "orders-api", "environmentVariable": variable.Name, "value": variable.Value})
+			}
+			if workloadName == "payments-api" && variable.Name == "DEMO_PAYMENT_MODE" && (variable.Value == "normal" || variable.Value == "fail") {
+				runtime = append(runtime, map[string]string{"container": "payments-api", "environmentVariable": variable.Name, "value": variable.Value})
+			}
+		}
+	}
+	if len(runtime) > 0 {
+		projected["diagnosticRuntimeConfig"] = runtime
+	}
+	return json.Marshal(projected)
+}
+
+// OrdersConfig returns one explicitly accepted, non-secret diagnostic key. It
+// is intentionally not a generic ConfigMap reader.
+func (b Backend) OrdersConfig(ctx context.Context) (json.RawMessage, error) {
+	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/configmaps/orders-config", nil, true, 16<<10)
+	if err != nil {
+		return nil, err
+	}
+	var config struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+		Data map[string]string `json:"data"`
+	}
+	if json.Unmarshal(raw, &config) != nil || config.Metadata.Name != "orders-config" {
+		return nil, errors.New("invalid orders ConfigMap response")
+	}
+	mode := config.Data["order_mode"]
+	if len(mode) == 0 || len(mode) > 64 || !utf8.ValidString(mode) {
+		return nil, errors.New("invalid order_mode value")
+	}
+	return json.Marshal(map[string]any{"metadata": map[string]string{"name": "orders-config"}, "data": map[string]string{"order_mode": mode}})
 }
 
 func (b Backend) Service(ctx context.Context, name string) (json.RawMessage, error) {
@@ -95,6 +176,14 @@ func (b Backend) Service(ctx context.Context, name string) (json.RawMessage, err
 		return nil, errors.New("unknown demo workload")
 	}
 	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/services/"+name, nil, true, 64<<10)
+	return sanitizeKubernetes(raw, err)
+}
+
+func (b Backend) EndpointSlices(ctx context.Context, name string) (json.RawMessage, error) {
+	if !workload(name) {
+		return nil, errors.New("unknown demo workload")
+	}
+	raw, err := b.get(ctx, b.Kubernetes, "/apis/discovery.k8s.io/v1/namespaces/"+namespace+"/endpointslices", url.Values{"labelSelector": {"kubernetes.io/service-name=" + name}, "limit": {"20"}}, true, 128<<10)
 	return sanitizeKubernetes(raw, err)
 }
 
@@ -233,9 +322,11 @@ func metricQuery(name, metric string) (string, error) {
 	case "request_rate":
 		query = fmt.Sprintf(`sum(rate(demo_requests_total{service_name=%q}[5m]))`, name)
 	case "error_rate":
-		query = fmt.Sprintf(`sum(rate(demo_requests_total{service_name=%q,outcome!="ok"}[5m]))`, name)
+		query = fmt.Sprintf(`sum(rate(demo_requests_total{service_name=%q,outcome!="success"}[5m]))`, name)
 	case "heap_bytes":
 		query = fmt.Sprintf(`max(demo_process_heap_alloc_bytes{service_name=%q})`, name)
+	case "success_latency_avg":
+		query = fmt.Sprintf(`sum(increase(demo_request_duration_seconds_sum{service_name=%q,outcome="success"}[30s])) / sum(increase(demo_request_duration_seconds_count{service_name=%q,outcome="success"}[30s]))`, name, name)
 	default:
 		return "", errors.New("unknown metric")
 	}
@@ -303,6 +394,10 @@ func (b Backend) Trace(ctx context.Context, id string) (json.RawMessage, error) 
 }
 
 func (b Backend) SearchTraces(ctx context.Context, name string, minutes int) (json.RawMessage, error) {
+	return b.SearchTracesFiltered(ctx, name, "", minutes)
+}
+
+func (b Backend) SearchTracesFiltered(ctx context.Context, name, filter string, minutes int) (json.RawMessage, error) {
 	if !workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
@@ -310,16 +405,30 @@ func (b Backend) SearchTraces(ctx context.Context, name string, minutes int) (js
 		return nil, errors.New("trace window must be 1 to 60 minutes")
 	}
 	now := time.Now()
-	return b.SearchTracesWindow(ctx, name, now.Add(-time.Duration(minutes)*time.Minute), now)
+	return b.SearchTracesWindowFiltered(ctx, name, filter, now.Add(-time.Duration(minutes)*time.Minute), now)
 }
 
 func (b Backend) SearchTracesWindow(ctx context.Context, name string, start, end time.Time) (json.RawMessage, error) {
+	return b.SearchTracesWindowFiltered(ctx, name, "", start, end)
+}
+
+func (b Backend) SearchTracesWindowFiltered(ctx context.Context, name, filter string, start, end time.Time) (json.RawMessage, error) {
 	if !workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
 	if err := ValidateWindow(start, end); err != nil {
 		return nil, err
 	}
-	q := url.Values{"q": {fmt.Sprintf(`{ resource.service.name = %q }`, name)}, "start": {fmt.Sprint(start.Unix())}, "end": {fmt.Sprint(end.Unix())}, "limit": {"10"}}
+	query := fmt.Sprintf(`{ resource.service.name = %q }`, name)
+	switch filter {
+	case "":
+	case "error":
+		query = fmt.Sprintf(`{ resource.service.name = %q && span.http.response.status_code >= 500 }`, name)
+	case "slow_success":
+		query = fmt.Sprintf(`{ resource.service.name = %q && span.http.response.status_code = 200 && duration >= 900ms }`, name)
+	default:
+		return nil, errors.New("unknown trace filter")
+	}
+	q := url.Values{"q": {query}, "start": {fmt.Sprint(start.Unix())}, "end": {fmt.Sprint(end.Unix())}, "limit": {"10"}}
 	return b.get(ctx, b.Tempo, "/api/search", q, false, 64<<10)
 }

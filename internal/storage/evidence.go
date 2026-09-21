@@ -11,9 +11,11 @@ import (
 	"incidentpilot/internal/evidence"
 )
 
+const maxEvidenceBatchSize = 16
+
 func (store *Postgres) SaveBatch(ctx context.Context, records []evidence.Record) error {
-	if len(records) == 0 || len(records) > 8 {
-		return fmt.Errorf("evidence batch must contain 1 to 8 records")
+	if err := validateEvidenceBatchSize(len(records)); err != nil {
+		return err
 	}
 	ctx, span := otel.Tracer("incidentpilot/storage").Start(ctx, "evidence.save_batch")
 	defer span.End()
@@ -34,6 +36,13 @@ VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,$9::jsonb,$10,$11,NULLIF($12,'
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit evidence: %w", err)
+	}
+	return nil
+}
+
+func validateEvidenceBatchSize(size int) error {
+	if size < 1 || size > maxEvidenceBatchSize {
+		return fmt.Errorf("evidence batch must contain 1 to %d records", maxEvidenceBatchSize)
 	}
 	return nil
 }

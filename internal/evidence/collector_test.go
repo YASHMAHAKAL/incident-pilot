@@ -48,6 +48,7 @@ func TestCollectsPersistsAndNormalizesEvidence(t *testing.T) {
 	caller := &fakeCaller{results: map[string]ToolObservation{
 		"kubernetes_get_deployment":        observation("kubernetes/deployment", `{"spec":{"replicas":1},"status":{"availableReplicas":0}}`, now),
 		"kubernetes_get_service":           observation("kubernetes/service", `{"spec":{"selector":{"app":"frontend"}}}`, now),
+		"kubernetes_get_endpointslices":    observation("kubernetes/endpointslices", `{"items":[{"endpoints":[{"addresses":["10.0.0.1"]}]}]}`, now),
 		"kubernetes_get_pods":              observation("kubernetes/pods", `{"items":[]}`, now),
 		"kubernetes_get_events":            observation("kubernetes/events", `{"items":[{}]}`, now),
 		"prometheus_get_demo_metric_range": observation("prometheus/range", `{"data":{"result":[{"values":[[1,"0.2"]]}]}}`, now),
@@ -66,7 +67,7 @@ func TestCollectsPersistsAndNormalizesEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Evidence) != 12 || len(store.saved) != 12 {
+	if len(report.Evidence) != 13 || len(store.saved) != 13 {
 		t.Fatalf("got %d evidence and %d saved", len(report.Evidence), len(store.saved))
 	}
 	if report.WindowStart != now.Add(-7*time.Minute) || report.WindowEnd != now {
@@ -99,6 +100,7 @@ func TestCollectionPartialFailureAndProvenanceRejection(t *testing.T) {
 	caller := &fakeCaller{results: map[string]ToolObservation{
 		"kubernetes_get_deployment":        observation("wrong/source", `{}`, now),
 		"kubernetes_get_service":           observation("kubernetes/service", `{"spec":{}}`, now),
+		"kubernetes_get_endpointslices":    observation("kubernetes/endpointslices", `{"items":[]}`, now),
 		"kubernetes_get_pods":              observation("kubernetes/pods", `{"items":[]}`, now),
 		"kubernetes_get_events":            observation("kubernetes/events", `{"items":[]}`, now),
 		"prometheus_get_demo_metric_range": observation("prometheus/range", `{"data":{"result":[]}}`, now),
@@ -112,7 +114,7 @@ func TestCollectionPartialFailureAndProvenanceRejection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Failures) != 3 || len(store.saved) != 5 {
+	if len(report.Failures) != 3 || len(store.saved) != 6 {
 		t.Fatalf("failures=%+v saved=%d", report.Failures, len(store.saved))
 	}
 }
@@ -130,11 +132,29 @@ func TestWindowRejectsStaleAndUnsupportedIncidents(t *testing.T) {
 	}
 }
 
+func TestLatencyAlertSelectsSuccessfulLatencyMetric(t *testing.T) {
+	inc := incident.Incident{AlertName: "DemoCheckoutLatency"}
+	if got := initialMetric(inc); got != "success_latency_avg" {
+		t.Fatalf("latency alert selected %q", got)
+	}
+	inc.AlertName = "DemoCheckoutErrors"
+	if got := initialMetric(inc); got != "error_rate" {
+		t.Fatalf("error alert selected %q", got)
+	}
+	if got := incidentTraceFilter(incident.Incident{AlertName: "DemoCheckoutLatency"}); got != "slow_success" {
+		t.Fatalf("latency alert selected trace filter %q", got)
+	}
+	if got := incidentTraceFilter(incident.Incident{AlertName: "DemoCheckoutErrors"}); got != "error" {
+		t.Fatalf("error alert selected trace filter %q", got)
+	}
+}
+
 func TestTargetedCollectionScopesWorkloadAndMetric(t *testing.T) {
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	caller := &fakeCaller{results: map[string]ToolObservation{
 		"kubernetes_get_deployment":        observation("kubernetes/deployment", `{"spec":{}}`, now),
 		"kubernetes_get_service":           observation("kubernetes/service", `{"spec":{}}`, now),
+		"kubernetes_get_endpointslices":    observation("kubernetes/endpointslices", `{"items":[]}`, now),
 		"kubernetes_get_pods":              observation("kubernetes/pods", `{"items":[]}`, now),
 		"kubernetes_get_events":            observation("kubernetes/events", `{"items":[]}`, now),
 		"prometheus_get_demo_metric_range": observation("prometheus/range", `{"data":{"result":[]}}`, now),
@@ -169,12 +189,48 @@ func TestTargetedCollectionScopesWorkloadAndMetric(t *testing.T) {
 	}
 }
 
+func TestOrdersCollectionReadsAllowlistedConfigAndObservedCrashLoopLogs(t *testing.T) {
+	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	caller := &fakeCaller{results: map[string]ToolObservation{
+		"kubernetes_get_deployment":        observation("kubernetes/deployment", `{"diagnosticConfigReferences":[{"container":"orders-api","environmentVariable":"DEMO_ORDER_MODE","configMap":"orders-config","key":"order_mode"}]}`, now),
+		"kubernetes_get_orders_config":     observation("kubernetes/configmap", `{"metadata":{"name":"orders-config"},"data":{"order_mode":"unsupported"}}`, now),
+		"kubernetes_get_service":           observation("kubernetes/service", `{"spec":{}}`, now),
+		"kubernetes_get_endpointslices":    observation("kubernetes/endpointslices", `{"items":[]}`, now),
+		"kubernetes_get_pods":              observation("kubernetes/pods", `{"items":[{"metadata":{"name":"orders-api-abc-123"},"status":{"containerStatuses":[{"name":"orders-api","state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}]}`, now),
+		"kubernetes_get_pod_logs":          {Source: "kubernetes/pod_logs", CollectedAt: now, Text: `{"msg":"demo stopped","error":"invalid order mode \"unsupported\""}`},
+		"kubernetes_get_events":            observation("kubernetes/events", `{"items":[]}`, now),
+		"prometheus_get_demo_metric_range": observation("prometheus/range", `{"data":{"result":[]}}`, now),
+		"loki_get_demo_logs":               observation("loki", `{"data":{"result":[]}}`, now),
+		"tempo_search_demo_traces":         observation("tempo/search", `{"traces":[]}`, now),
+	}}
+	store := &fakeEvidenceStore{}
+	collector := Collector{Caller: caller, Store: store, Now: func() time.Time { return now }}
+	inc := incident.Incident{ID: "00000000-0000-0000-0000-000000000001", Namespace: "incidentpilot-demo", Service: "orders-api", StartedAt: now.Add(-time.Minute)}
+	report, err := collector.CollectTarget(context.Background(), inc, "orders-api", "error_rate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundConfig, foundLogs := false, false
+	for _, record := range report.Evidence {
+		switch record.Tool {
+		case "kubernetes_get_orders_config":
+			foundConfig = record.ResourceRef == "incidentpilot-demo/configmap/orders-config"
+		case "kubernetes_get_pod_logs":
+			foundLogs = record.ResourceRef == "incidentpilot-demo/orders-api-abc-123" && strings.Contains(string(record.Payload), "invalid order mode")
+		}
+	}
+	if !foundConfig || !foundLogs {
+		t.Fatalf("missing bounded config or pod-log evidence: %+v", report.Evidence)
+	}
+}
+
 func TestChangeCollectionDoesNotTrustRevisionOutsideArgoHistory(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
 	caller := &fakeCaller{results: map[string]ToolObservation{
 		"kubernetes_get_deployment":        observation("kubernetes/deployment", `{}`, now),
 		"kubernetes_get_service":           observation("kubernetes/service", `{}`, now),
+		"kubernetes_get_endpointslices":    observation("kubernetes/endpointslices", `{"items":[]}`, now),
 		"kubernetes_get_pods":              observation("kubernetes/pods", `{"items":[]}`, now),
 		"kubernetes_get_events":            observation("kubernetes/events", `{"items":[]}`, now),
 		"prometheus_get_demo_metric_range": observation("prometheus/range", `{"data":{"result":[]}}`, now),

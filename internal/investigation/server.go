@@ -26,7 +26,7 @@ type LogsInput struct {
 }
 type MetricInput struct {
 	Workload string `json:"workload" jsonschema:"Demo workload name"`
-	Metric   string `json:"metric" jsonschema:"One of request_rate, error_rate, or heap_bytes"`
+	Metric   string `json:"metric" jsonschema:"One of request_rate, error_rate, heap_bytes, or success_latency_avg"`
 }
 type LokiInput struct {
 	Workload string `json:"workload" jsonschema:"Demo workload name"`
@@ -37,7 +37,7 @@ type LokiInput struct {
 }
 type MetricWindowInput struct {
 	Workload string `json:"workload" jsonschema:"Demo workload name"`
-	Metric   string `json:"metric" jsonschema:"One of request_rate, error_rate, or heap_bytes"`
+	Metric   string `json:"metric" jsonschema:"One of request_rate, error_rate, heap_bytes, or success_latency_avg"`
 	Start    string `json:"start" jsonschema:"RFC3339 window start"`
 	End      string `json:"end" jsonschema:"RFC3339 window end"`
 }
@@ -46,6 +46,7 @@ type TraceInput struct {
 }
 type TraceSearchInput struct {
 	Workload string `json:"workload" jsonschema:"Demo workload name"`
+	Filter   string `json:"filter,omitempty" jsonschema:"Optional fixed filter: error or slow_success"`
 	Minutes  int    `json:"minutes,omitempty" jsonschema:"Relative window in minutes, 1 to 60; omit when start and end are given"`
 	Start    string `json:"start,omitempty" jsonschema:"Optional RFC3339 window start"`
 	End      string `json:"end,omitempty" jsonschema:"Optional RFC3339 window end"`
@@ -133,10 +134,22 @@ func (s *Server) Handler() http.Handler {
 			return Result{Source: "kubernetes/deployment", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_orders_config", Description: "Read only orders-config.data.order_mode from the demo namespace; this is not a generic ConfigMap or Secret reader.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, Result, error) {
+		return s.instrument(ctx, "kubernetes_get_orders_config", func(ctx context.Context) (Result, error) {
+			data, err := s.backend.OrdersConfig(ctx)
+			return Result{Source: "kubernetes/configmap", CollectedAt: time.Now().UTC(), Data: data}, err
+		})
+	})
 	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_service", Description: "Read an allowlisted demo Service and its selector.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_service", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Service(ctx, in.Workload)
 			return Result{Source: "kubernetes/service", CollectedAt: time.Now().UTC(), Data: data}, err
+		})
+	})
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_endpointslices", Description: "Read up to 20 EndpointSlices selected by one allowlisted demo Service.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+		return s.instrument(ctx, "kubernetes_get_endpointslices", func(ctx context.Context) (Result, error) {
+			data, err := s.backend.EndpointSlices(ctx, in.Workload)
+			return Result{Source: "kubernetes/endpointslices", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
 	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_pods", Description: "Read status of up to 20 demo workload pods.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
@@ -157,7 +170,7 @@ func (s *Server) Handler() http.Handler {
 			return Result{Source: "kubernetes/pod_logs", CollectedAt: time.Now().UTC(), Text: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "prometheus_get_demo_metric", Description: "Query one fixed demo metric expression (request_rate, error_rate, heap_bytes).", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in MetricInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "prometheus_get_demo_metric", Description: "Query one fixed demo metric expression (request_rate, error_rate, heap_bytes, success_latency_avg).", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in MetricInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "prometheus_get_demo_metric", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Metric(ctx, in.Workload, in.Metric)
 			return Result{Source: "prometheus", CollectedAt: time.Now().UTC(), Data: data}, err
@@ -204,9 +217,9 @@ func (s *Server) Handler() http.Handler {
 				if parseErr != nil {
 					return Result{}, parseErr
 				}
-				data, err = s.backend.SearchTracesWindow(ctx, in.Workload, start, end)
+				data, err = s.backend.SearchTracesWindowFiltered(ctx, in.Workload, in.Filter, start, end)
 			} else {
-				data, err = s.backend.SearchTraces(ctx, in.Workload, in.Minutes)
+				data, err = s.backend.SearchTracesFiltered(ctx, in.Workload, in.Filter, in.Minutes)
 			}
 			return Result{Source: "tempo/search", CollectedAt: time.Now().UTC(), Data: data}, err
 		})

@@ -8,4 +8,4 @@ make scenario-invalid-configmap-check
 make scenario-invalid-configmap-reset
 ```
 
-Run these from the repository root after `make kind-up`. Reset restores `normal`, restarts the Deployment, and waits for rollout. Always reset after injection, even if check fails. The [ground truth](ground-truth.yaml) identifies the ConfigMap, failed pod, and startup log as evidence. ConfigMap values consumed as environment variables require a pod restart to take effect.
+Run these from the repository root after `make kind-up`. Reset restores `normal`, restarts the Deployment, and waits for rollout. Always reset after injection, even if check fails. The `DemoInvalidOrderConfig` Prometheus rule automatically creates an orders-api incident from the pod's `CrashLoopBackOff` state. The [ground truth](ground-truth.yaml) identifies the ConfigMap, Deployment reference, failed pod, and startup log as evidence. The one-shot investigator requires all four cited records before trusted code emits an RCA. ConfigMap values consumed as environment variables require a pod restart to take effect.

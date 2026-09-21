@@ -59,7 +59,7 @@ kind-deploy:
 	$(KUBECTL) --context $(KIND_CONTEXT) apply -f deploy/kind/50-mcp.yaml
 
 kind-refresh:
-	$(KUBECTL) --context $(KIND_CONTEXT) -n incidentpilot-observability rollout restart daemonset/otel-collector deployment/prometheus deployment/loki deployment/tempo deployment/grafana
+	$(KUBECTL) --context $(KIND_CONTEXT) -n incidentpilot-observability rollout restart daemonset/otel-collector deployment/kube-state-metrics deployment/prometheus deployment/loki deployment/tempo deployment/grafana
 	$(KUBECTL) --context $(KIND_CONTEXT) -n incidentpilot-demo rollout restart deployment/frontend deployment/orders-api deployment/payments-api deployment/traffic-generator
 	$(KUBECTL) --context $(KIND_CONTEXT) -n incidentpilot-system rollout restart deployment/incidentpilot-api deployment/alertmanager deployment/incidentpilot-mcp
 
