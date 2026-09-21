@@ -1,0 +1,27 @@
+scenario: bad-image
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Deployment
+  name: orders-api
+  container: orders-api
+baseline:
+  image: incidentpilot-demo:local
+  image_pull_policy: Never
+injected_fault:
+  image: 127.0.0.1:59999/incidentpilot/missing:phase2-bad-image
+  image_pull_policy: Always
+  operation: replace_container_image_with_unreachable_local_registry
+ground_truth:
+  affected_component: orders-api
+  root_cause: deployment_references_unpullable_image
+  expected_kubernetes_reason: ImagePullBackOff
+required_evidence:
+  - orders_api_new_pod_waiting_reason_imagepullbackoff
+  - deployment_image_and_pull_policy_changed_from_baseline
+  - kubernetes_failed_image_pull_event
+  - deployment_rollout_stalled_with_old_replica_still_serving
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator

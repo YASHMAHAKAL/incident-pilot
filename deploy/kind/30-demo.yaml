@@ -1,0 +1,152 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: incidentpilot-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: frontend}
+  template:
+    metadata:
+      labels: {app: frontend}
+    spec:
+      containers:
+        - name: frontend
+          image: incidentpilot-demo:local
+          imagePullPolicy: Never
+          env:
+            - {name: DEMO_ROLE, value: frontend}
+            - {name: DEMO_UPSTREAM_URL, value: "http://orders-api:8080"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: incidentpilot-demo
+spec:
+  selector: {app: frontend}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: incidentpilot-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: orders-api}
+  template:
+    metadata:
+      labels: {app: orders-api}
+    spec:
+      containers:
+        - name: orders-api
+          image: incidentpilot-demo:local
+          imagePullPolicy: Never
+          env:
+            - {name: DEMO_ROLE, value: orders-api}
+            - {name: DEMO_UPSTREAM_URL, value: "http://payments-api:8080"}
+            - name: DEMO_ORDER_MODE
+              valueFrom:
+                configMapKeyRef: {name: orders-config, key: order_mode}
+            - {name: DEMO_ORDER_CPU_BURN_MS, value: "0"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api
+  namespace: incidentpilot-demo
+spec:
+  selector: {app: orders-api}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payments-api
+  namespace: incidentpilot-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: payments-api}
+  template:
+    metadata:
+      labels: {app: payments-api}
+    spec:
+      containers:
+        - name: payments-api
+          image: incidentpilot-demo:local
+          imagePullPolicy: Never
+          env:
+            - {name: DEMO_ROLE, value: payments-api}
+            - {name: DEMO_PAYMENT_WORKING_SET_MIB, value: "72"}
+            - {name: DEMO_PAYMENT_MODE, value: normal}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
+          ports:
+            - {name: http, containerPort: 8080}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {memory: 128Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payments-api
+  namespace: incidentpilot-demo
+spec:
+  selector: {app: payments-api}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: orders-config
+  namespace: incidentpilot-demo
+data:
+  order_mode: normal
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: traffic-generator
+  namespace: incidentpilot-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: traffic-generator}
+  template:
+    metadata:
+      labels: {app: traffic-generator}
+    spec:
+      containers:
+        - name: traffic-generator
+          image: incidentpilot-traffic:local
+          imagePullPolicy: Never
+          env:
+            - {name: TRAFFIC_TARGET_URL, value: "http://frontend:8080/checkout"}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}

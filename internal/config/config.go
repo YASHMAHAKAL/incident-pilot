@@ -1,0 +1,82 @@
+package config
+
+import (
+	"fmt"
+	"net"
+	"net/url"
+	"os"
+	"strconv"
+	"time"
+)
+
+const (
+	defaultHTTPAddr        = ":8080"
+	defaultShutdownTimeout = 10 * time.Second
+)
+
+type Config struct {
+	HTTPAddr        string
+	ShutdownTimeout time.Duration
+	DatabaseURL     string
+	WebhookToken    string
+	MCPEndpoint     string
+	MCPToken        string
+}
+
+func Load() (Config, error) {
+	return Parse(os.Getenv)
+}
+
+// Parse accepts an environment lookup so configuration can be tested without
+// changing the process environment.
+func Parse(getenv func(string) string) (Config, error) {
+	cfg := Config{
+		HTTPAddr:        defaultHTTPAddr,
+		ShutdownTimeout: defaultShutdownTimeout,
+	}
+	if value := getenv("INCIDENTPILOT_HTTP_ADDR"); value != "" {
+		cfg.HTTPAddr = value
+	}
+	if value := getenv("INCIDENTPILOT_SHUTDOWN_TIMEOUT"); value != "" {
+		parsed, err := time.ParseDuration(value)
+		if err != nil || parsed <= 0 {
+			return Config{}, fmt.Errorf("INCIDENTPILOT_SHUTDOWN_TIMEOUT must be a positive duration")
+		}
+		cfg.ShutdownTimeout = parsed
+	}
+	cfg.DatabaseURL = getenv("INCIDENTPILOT_DATABASE_URL")
+	cfg.WebhookToken = getenv("INCIDENTPILOT_WEBHOOK_TOKEN")
+	cfg.MCPEndpoint = getenv("INCIDENTPILOT_MCP_ENDPOINT")
+	cfg.MCPToken = getenv("INCIDENTPILOT_MCP_TOKEN")
+	if (cfg.DatabaseURL == "") != (cfg.WebhookToken == "") {
+		return Config{}, fmt.Errorf("INCIDENTPILOT_DATABASE_URL and INCIDENTPILOT_WEBHOOK_TOKEN must be set together")
+	}
+	if cfg.WebhookToken != "" && len(cfg.WebhookToken) < 16 {
+		return Config{}, fmt.Errorf("INCIDENTPILOT_WEBHOOK_TOKEN must be at least 16 bytes")
+	}
+	if (cfg.MCPEndpoint == "") != (cfg.MCPToken == "") {
+		return Config{}, fmt.Errorf("INCIDENTPILOT_MCP_ENDPOINT and INCIDENTPILOT_MCP_TOKEN must be set together")
+	}
+	if cfg.MCPEndpoint != "" {
+		if cfg.DatabaseURL == "" {
+			return Config{}, fmt.Errorf("MCP evidence collection requires PostgreSQL")
+		}
+		u, err := url.Parse(cfg.MCPEndpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.Path != "/mcp" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return Config{}, fmt.Errorf("INCIDENTPILOT_MCP_ENDPOINT must be an http(s) /mcp URL")
+		}
+		if len(cfg.MCPToken) < 24 {
+			return Config{}, fmt.Errorf("INCIDENTPILOT_MCP_TOKEN must be at least 24 bytes")
+		}
+	}
+
+	_, port, err := net.SplitHostPort(cfg.HTTPAddr)
+	if err != nil {
+		return Config{}, fmt.Errorf("INCIDENTPILOT_HTTP_ADDR must be host:port: %w", err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return Config{}, fmt.Errorf("INCIDENTPILOT_HTTP_ADDR must use a port from 1 to 65535")
+	}
+	return cfg, nil
+}

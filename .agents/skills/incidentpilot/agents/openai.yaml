@@ -1,0 +1,16 @@
+interface:
+  display_name: IncidentPilot
+  short_description: Engineering guardrails and workflow for the IncidentPilot Kubernetes
+    AIOps project
+  default_prompt: Use the IncidentPilot skill to inspect the repository, preserve
+    its architectural and security invariants, and complete the requested task with
+    appropriate verification.
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  allow_implicit_invocation: true
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas

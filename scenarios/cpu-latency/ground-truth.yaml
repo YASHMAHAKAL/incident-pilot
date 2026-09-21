@@ -1,0 +1,25 @@
+scenario: cpu-latency
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Deployment
+  name: orders-api
+  container: orders-api
+baseline:
+  order_cpu_burn_ms: 0
+injected_fault:
+  order_cpu_burn_ms: 1000
+  operation: increase_per_order_cpu_work
+ground_truth:
+  affected_component: orders-api
+  root_cause: excessive_cpu_work_per_order
+  expected_order_duration_ms_min: 900
+required_evidence:
+  - orders_deployment_cpu_burn_setting_changed_from_0_to_1000
+  - orders_request_duration_histogram_or_log_increases
+  - orders_span_duration_increases
+  - checkout_remains_successful_but_slower
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator

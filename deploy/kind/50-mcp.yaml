@@ -1,0 +1,97 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: incidentpilot-mcp
+  namespace: incidentpilot-system
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: incidentpilot-demo-reader
+  namespace: incidentpilot-demo
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, services]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: incidentpilot-mcp-demo-reader
+  namespace: incidentpilot-demo
+subjects:
+  - kind: ServiceAccount
+    name: incidentpilot-mcp
+    namespace: incidentpilot-system
+roleRef:
+  kind: Role
+  name: incidentpilot-demo-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: incidentpilot-mcp-local-credential
+  namespace: incidentpilot-system
+type: Opaque
+stringData:
+  # Public, disposable kind-only token; replace for any non-local deployment.
+  token: incidentpilot-mcp-local-dev-token-v1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incidentpilot-mcp
+  namespace: incidentpilot-system
+spec:
+  selector: {app: incidentpilot-mcp}
+  ports:
+    - {name: http, port: 8081, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incidentpilot-mcp
+  namespace: incidentpilot-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: incidentpilot-mcp}
+  template:
+    metadata:
+      labels: {app: incidentpilot-mcp}
+    spec:
+      serviceAccountName: incidentpilot-mcp
+      containers:
+        - name: mcp
+          image: incidentpilot-mcp:local
+          imagePullPolicy: Never
+          envFrom:
+            - secretRef:
+                # Optional Phase 8 Argo CD/GitHub read-only configuration.
+                name: incidentpilot-change-sources
+                optional: true
+          env:
+            - name: INCIDENTPILOT_MCP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-mcp-local-credential, key: token}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
+          ports:
+            - {name: http, containerPort: 8081}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /healthz, port: http}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            runAsNonRoot: true
+            runAsUser: 65532
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}

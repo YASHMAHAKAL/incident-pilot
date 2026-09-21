@@ -1,0 +1,25 @@
+scenario: invalid-configmap
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Deployment
+  name: orders-api
+  configmap: orders-config
+baseline:
+  order_mode: normal
+injected_fault:
+  order_mode: unsupported
+  operation: update_configmap_and_restart_deployment
+ground_truth:
+  affected_component: orders-api
+  root_cause: unsupported_order_mode_from_configmap
+  expected_kubernetes_reason: CrashLoopBackOff
+required_evidence:
+  - orders_config_order_mode_unsupported
+  - orders_deployment_references_orders_config
+  - new_orders_pod_crashloopbackoff
+  - new_orders_container_log_invalid_order_mode
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator

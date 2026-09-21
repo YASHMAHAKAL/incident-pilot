@@ -1,0 +1,24 @@
+scenario: broken-service-selector
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Service
+  name: payments-api
+baseline:
+  selector_app: payments-api
+injected_fault:
+  selector_app: payments-api-disconnected
+  operation: replace_service_selector_and_restart_orders_client
+ground_truth:
+  affected_component: payments-api
+  root_cause: service_selector_matches_no_payment_pods
+  expected_checkout_status: 502
+required_evidence:
+  - payments_service_selector_mismatch_with_pod_labels
+  - payments_service_endpointslice_has_no_addresses
+  - payments_deployment_pod_remains_ready
+  - frontend_or_orders_upstream_error_and_checkout_502
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator

@@ -1,0 +1,26 @@
+scenario: downstream-failure
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Deployment
+  name: payments-api
+  container: payments-api
+baseline:
+  payment_mode: normal
+injected_fault:
+  payment_mode: fail
+  operation: simulate_payment_processor_failure
+ground_truth:
+  affected_component: payments-api
+  root_cause: payment_processor_failure_mode_enabled
+  expected_payment_status: 503
+  expected_checkout_status: 502
+required_evidence:
+  - payments_deployment_failure_mode_changed_from_normal_to_fail
+  - payment_span_has_http_503_and_error_status
+  - same_trace_contains_orders_and_frontend_upstream_errors
+  - checkout_returns_502
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator

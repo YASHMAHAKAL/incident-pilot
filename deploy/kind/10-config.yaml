@@ -1,0 +1,171 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: incidentpilot-observability
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: 0.0.0.0:4318
+      filelog:
+        include: [/var/log/pods/incidentpilot-demo_*/*/*.log]
+        start_at: beginning
+        include_file_path: true
+        operators:
+          - type: container
+    processors:
+      batch: {}
+      resource/logs:
+        attributes:
+          - key: service.name
+            from_attribute: k8s.container.name
+            action: upsert
+    exporters:
+      prometheus:
+        endpoint: 0.0.0.0:8889
+        resource_to_telemetry_conversion:
+          enabled: true
+      otlphttp/tempo:
+        endpoint: http://tempo.incidentpilot-observability.svc.cluster.local:4318
+      otlphttp/loki:
+        endpoint: http://loki.incidentpilot-observability.svc.cluster.local:3100/otlp
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:13133
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [otlphttp/tempo]
+        metrics:
+          receivers: [otlp]
+          processors: [batch]
+          exporters: [prometheus]
+        logs:
+          receivers: [filelog]
+          processors: [resource/logs, batch]
+          exporters: [otlphttp/loki]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: incidentpilot-observability
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 10s
+      evaluation_interval: 10s
+    rule_files:
+      - /etc/prometheus/rules.yml
+    alerting:
+      alertmanagers:
+        - static_configs:
+            - targets: [alertmanager.incidentpilot-system.svc.cluster.local:9093]
+    scrape_configs:
+      - job_name: incidentpilot-demo
+        static_configs:
+          - targets: [otel-collector.incidentpilot-observability.svc.cluster.local:8889]
+  rules.yml: |
+    groups:
+      - name: incidentpilot-demo
+        rules:
+          - alert: DemoCheckoutErrors
+            expr: increase(demo_requests_total{service_name="frontend",role="frontend",outcome="upstream_error"}[30s]) > 2
+            for: 10s
+            labels:
+              namespace: incidentpilot-demo
+              service: frontend
+              severity: warning
+            annotations:
+              summary: Demo checkout is failing on upstream calls
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: loki-config
+  namespace: incidentpilot-observability
+data:
+  config.yaml: |
+    auth_enabled: false
+    server:
+      http_listen_port: 3100
+    common:
+      instance_addr: 127.0.0.1
+      path_prefix: /tmp/loki
+      storage:
+        filesystem:
+          chunks_directory: /tmp/loki/chunks
+          rules_directory: /tmp/loki/rules
+      replication_factor: 1
+      ring:
+        kvstore:
+          store: inmemory
+    schema_config:
+      configs:
+        - from: 2024-01-01
+          store: tsdb
+          object_store: filesystem
+          schema: v13
+          index:
+            prefix: index_
+            period: 24h
+    limits_config:
+      allow_structured_metadata: true
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tempo-config
+  namespace: incidentpilot-observability
+data:
+  config.yaml: |
+    stream_over_http_enabled: true
+    server:
+      http_listen_port: 3200
+    distributor:
+      receivers:
+        otlp:
+          protocols:
+            http:
+              endpoint: 0.0.0.0:4318
+    storage:
+      trace:
+        backend: local
+        wal:
+          path: /tmp/tempo/wal
+        local:
+          path: /tmp/tempo/blocks
+    usage_report:
+      reporting_enabled: false
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: incidentpilot-observability
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.incidentpilot-observability.svc.cluster.local:9090
+        isDefault: true
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.incidentpilot-observability.svc.cluster.local:3100
+      - name: Tempo
+        uid: tempo
+        type: tempo
+        access: proxy
+        url: http://tempo.incidentpilot-observability.svc.cluster.local:3200

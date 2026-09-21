@@ -1,0 +1,184 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: incidentpilot-local-credentials
+  namespace: incidentpilot-system
+type: Opaque
+stringData:
+  # Deliberately public dummy credentials for this disposable kind cluster only.
+  postgres_password: incidentpilot-local-dev-only
+  database_url: postgres://incidentpilot:incidentpilot-local-dev-only@postgres.incidentpilot-system.svc.cluster.local:5432/incidentpilot?sslmode=disable
+  webhook_token: incidentpilot-local-dev-token-v1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: incidentpilot-system
+spec:
+  selector: {app: postgres}
+  ports:
+    - {name: postgres, port: 5432, targetPort: postgres}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: incidentpilot-system
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: {app: postgres}
+  template:
+    metadata:
+      labels: {app: postgres}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17.11-alpine3.24
+          env:
+            - {name: POSTGRES_USER, value: incidentpilot}
+            - {name: POSTGRES_DB, value: incidentpilot}
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-local-credentials, key: postgres_password}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports:
+            - {name: postgres, containerPort: 5432}
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, incidentpilot, -d, incidentpilot]
+            periodSeconds: 5
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/postgresql/data}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: incidentpilot-api
+  namespace: incidentpilot-system
+spec:
+  selector: {app: incidentpilot-api}
+  ports:
+    - {name: http, port: 8080, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: incidentpilot-api
+  namespace: incidentpilot-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: incidentpilot-api}
+  template:
+    metadata:
+      labels: {app: incidentpilot-api}
+    spec:
+      containers:
+        - name: incidentpilot-api
+          image: incidentpilot-api:local
+          imagePullPolicy: Never
+          env:
+            - name: INCIDENTPILOT_DATABASE_URL
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-local-credentials, key: database_url}
+            - name: INCIDENTPILOT_WEBHOOK_TOKEN
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-local-credentials, key: webhook_token}
+            - {name: INCIDENTPILOT_MCP_ENDPOINT, value: "http://incidentpilot-mcp.incidentpilot-system.svc.cluster.local:8081/mcp"}
+            - name: INCIDENTPILOT_MCP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: incidentpilot-mcp-local-credential, key: token}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: "http://otel-collector.incidentpilot-observability.svc.cluster.local:4318"}
+          ports:
+            - {name: http, containerPort: 8080}
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: incidentpilot-system
+data:
+  alertmanager.yml: |
+    route:
+      receiver: incidentpilot-api
+      group_by: [alertname, namespace, service]
+      group_wait: 5s
+      group_interval: 10s
+      repeat_interval: 1m
+    receivers:
+      - name: incidentpilot-api
+        webhook_configs:
+          - url: http://incidentpilot-api.incidentpilot-system.svc.cluster.local:8080/api/v1/alerts/alertmanager
+            send_resolved: true
+            http_config:
+              authorization:
+                type: Bearer
+                credentials_file: /etc/alertmanager-secret/webhook_token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: incidentpilot-system
+spec:
+  selector: {app: alertmanager}
+  ports:
+    - {name: http, port: 9093, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: incidentpilot-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: alertmanager}
+  template:
+    metadata:
+      labels: {app: alertmanager}
+    spec:
+      securityContext:
+        fsGroup: 65534
+      containers:
+        - name: alertmanager
+          image: quay.io/prometheus/alertmanager:v0.33.1
+          args: ["--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"]
+          ports:
+            - {name: http, containerPort: 9093}
+          readinessProbe:
+            httpGet: {path: /-/ready, port: http}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          volumeMounts:
+            - {name: config, mountPath: /etc/alertmanager, readOnly: true}
+            - {name: credentials, mountPath: /etc/alertmanager-secret, readOnly: true}
+            - {name: data, mountPath: /alertmanager}
+      volumes:
+        - name: config
+          configMap: {name: alertmanager-config}
+        - name: credentials
+          secret: {secretName: incidentpilot-local-credentials}
+        - name: data
+          emptyDir: {}

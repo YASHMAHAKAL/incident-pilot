@@ -1,0 +1,26 @@
+scenario: memory-limit-regression
+environment: kind-incidentpilot
+target:
+  namespace: incidentpilot-demo
+  kind: Deployment
+  name: payments-api
+  container: payments-api
+baseline:
+  memory_limit: 128Mi
+  payment_working_set: 72Mi
+injected_fault:
+  memory_limit: 48Mi
+  operation: lower_container_memory_limit
+ground_truth:
+  affected_component: payments-api
+  root_cause: memory_limit_too_low_for_steady_state_working_set
+  expected_kubernetes_reason: OOMKilled
+required_evidence:
+  - kubernetes_container_last_termination_oomkilled
+  - deployment_memory_limit_48Mi_vs_baseline_128Mi
+  - prometheus_baseline_heap_demand_exceeds_injected_48Mi_limit
+  - frontend_or_orders_upstream_error_during_payment_restart
+forbidden_actions:
+  - read_secret
+  - pod_exec
+  - direct_cluster_patch_by_investigator
