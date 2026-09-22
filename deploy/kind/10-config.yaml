@@ -199,3 +199,49 @@ data:
         type: tempo
         access: proxy
         url: http://tempo.incidentpilot-observability.svc.cluster.local:3200
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-provider
+  namespace: incidentpilot-observability
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: IncidentPilot
+        folder: IncidentPilot
+        type: file
+        disableDeletion: true
+        editable: false
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-incidentpilot-dashboard
+  namespace: incidentpilot-observability
+data:
+  incidentpilot.json: |
+    {
+      "annotations": {"list": []},
+      "editable": false,
+      "panels": [
+        {"type":"stat","title":"Alert signals (15m)","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum(increase(incidentpilot_alert_signals_total[15m]))","refId":"A"}],"gridPos":{"h":7,"w":6,"x":0,"y":0}},
+        {"type":"stat","title":"Investigations (15m)","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum(increase(incidentpilot_investigations_total[15m]))","refId":"A"}],"gridPos":{"h":7,"w":6,"x":6,"y":0}},
+        {"type":"stat","title":"LLM calls (15m)","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum(increase(incidentpilot_llm_requests_total[15m]))","refId":"A"}],"gridPos":{"h":7,"w":6,"x":12,"y":0}},
+        {"type":"stat","title":"PRs created (15m)","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum(increase(incidentpilot_prs_created_total[15m]))","refId":"A"}],"gridPos":{"h":7,"w":6,"x":18,"y":0}},
+        {"type":"timeseries","title":"Investigation duration p95","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"histogram_quantile(0.95, sum by (le) (rate(incidentpilot_investigation_duration_seconds_bucket[5m])))","legendFormat":"p95","refId":"A"}],"gridPos":{"h":8,"w":12,"x":0,"y":7}},
+        {"type":"timeseries","title":"MCP calls by tool/status","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum by (tool, status) (rate(incidentpilot_tool_calls_total[5m]))","legendFormat":"{{tool}} {{status}}","refId":"A"}],"gridPos":{"h":8,"w":12,"x":12,"y":7}},
+        {"type":"timeseries","title":"LLM tokens","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum by (direction) (rate(incidentpilot_llm_tokens_total[5m]))","legendFormat":"{{direction}}","refId":"A"}],"gridPos":{"h":8,"w":12,"x":0,"y":15}},
+        {"type":"timeseries","title":"Remediation outcomes","datasource":{"type":"prometheus","uid":"prometheus"},"targets":[{"expr":"sum by (status) (rate(incidentpilot_remediation_requests_total[5m]))","legendFormat":"{{status}}","refId":"A"},{"expr":"sum(rate(incidentpilot_policy_denials_total[5m]))","legendFormat":"policy denied","refId":"B"}],"gridPos":{"h":8,"w":12,"x":12,"y":15}}
+      ],
+      "schemaVersion": 41,
+      "tags": ["incidentpilot", "phase-12"],
+      "templating": {"list": []},
+      "time": {"from": "now-1h", "to": "now"},
+      "title": "IncidentPilot control plane",
+      "uid": "incidentpilot-control-plane",
+      "version": 1
+    }

@@ -11,10 +11,12 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/llm"
+	"incidentpilot/internal/telemetry"
 )
 
 const (
@@ -53,6 +55,7 @@ type Report struct {
 	OutputTokens int          `json:"output_tokens"`
 	ToolCalls    int          `json:"tool_calls"`
 	Reason       string       `json:"reason,omitempty"`
+	TraceID      string       `json:"trace_id,omitempty"`
 }
 
 type Store interface {
@@ -86,20 +89,24 @@ func (a Investigator) Run(ctx context.Context, incidentID string) (Report, error
 	if _, err := uuid.Parse(incidentID); err != nil {
 		return Report{}, errors.New("invalid incident ID")
 	}
-	ctx, span := otel.Tracer("incidentpilot/agent").Start(ctx, "investigation.run")
-	defer span.End()
-	span.SetAttributes(attribute.String("incident.id", incidentID))
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	now := time.Now
 	if a.Now != nil {
 		now = a.Now
 	}
-	report := Report{ID: uuid.NewString(), IncidentID: incidentID, Status: StatusInsufficientEvidence, StartedAt: now().UTC(), Hypotheses: []Hypothesis{}, EvidenceIDs: []string{}}
 	inc, err := a.Incidents.Get(ctx, incidentID)
 	if err != nil {
 		return Report{}, fmt.Errorf("load incident: %w", err)
 	}
+	ctx = telemetry.Restore(ctx, telemetry.TraceContext{TraceParent: inc.TraceParent, TraceState: inc.TraceState})
+	ctx, span := otel.Tracer("incidentpilot/agent").Start(ctx, "incident.investigate")
+	defer span.End()
+	span.SetAttributes(attribute.String("incident.id", incidentID))
+	started := time.Now()
+	investigations, _ := otel.Meter("incidentpilot/agent").Int64Counter("incidentpilot_investigations_total")
+	durations, _ := otel.Meter("incidentpilot/agent").Float64Histogram("incidentpilot_investigation_duration_seconds", metric.WithUnit("s"))
+	report := Report{ID: uuid.NewString(), IncidentID: incidentID, Status: StatusInsufficientEvidence, StartedAt: now().UTC(), Hypotheses: []Hypothesis{}, EvidenceIDs: []string{}, TraceID: telemetry.TraceID(ctx)}
 	finish := func(reason string) (Report, error) {
 		report.Reason = reason
 		report.CompletedAt = now().UTC()
@@ -109,6 +116,9 @@ func (a Investigator) Run(ctx context.Context, incidentID string) (Report, error
 			return Report{}, fmt.Errorf("persist investigation: %w", err)
 		}
 		span.SetAttributes(attribute.String("investigation.status", report.Status), attribute.Int("investigation.llm_calls", report.LLMCalls), attribute.Int("investigation.tool_calls", report.ToolCalls))
+		labels := metric.WithAttributes(attribute.String("status", report.Status))
+		investigations.Add(ctx, 1, labels)
+		durations.Record(ctx, time.Since(started).Seconds(), labels)
 		return report, nil
 	}
 	initial, err := a.Collector.Collect(ctx, inc)

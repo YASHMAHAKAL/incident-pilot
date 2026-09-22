@@ -86,7 +86,7 @@ func run(ctx context.Context, incidentID, reportID string, logger *slog.Logger) 
 		return err
 	}
 	if report, ok := result.(agent.Report); ok {
-		logger.InfoContext(ctx, "investigation completed", "incident_id", report.IncidentID, "investigation_id", report.ID, "status", report.Status, "llm_calls", report.LLMCalls, "tool_calls", report.ToolCalls)
+		logger.InfoContext(ctx, "investigation completed", "incident_id", report.IncidentID, "investigation_id", report.ID, "trace_id", report.TraceID, "status", report.Status, "llm_calls", report.LLMCalls, "tool_calls", report.ToolCalls)
 	}
 	return json.NewEncoder(os.Stdout).Encode(result)
 }

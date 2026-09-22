@@ -23,6 +23,7 @@ import (
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/remediation"
+	"incidentpilot/internal/telemetry"
 )
 
 const maxWebhookBytes = 256 << 10
@@ -102,6 +103,11 @@ func HandlerWithServices(store incident.Store, evidenceStore evidence.Store, col
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		for _, signal := range signals {
+			traceContext := telemetry.Capture(ctx)
+			signal.TraceID = telemetry.TraceID(ctx)
+			signal.TraceParent = traceContext.TraceParent
+			signal.TraceState = traceContext.TraceState
+			logger.InfoContext(ctx, "incident signal received", "fingerprint", signal.Fingerprint, "trace_id", signal.TraceID)
 			result, err := store.Upsert(ctx, signal)
 			if err != nil {
 				logger.ErrorContext(ctx, "incident ingestion failed", "error", err)

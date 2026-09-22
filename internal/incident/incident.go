@@ -26,6 +26,9 @@ type Signal struct {
 	StartedAt   time.Time
 	ResolvedAt  *time.Time
 	Status      Status
+	TraceID     string
+	TraceParent string
+	TraceState  string
 }
 
 type Incident struct {
@@ -39,6 +42,9 @@ type Incident struct {
 	DetectedAt  time.Time  `json:"detected_at"`
 	ResolvedAt  *time.Time `json:"resolved_at,omitempty"`
 	Status      Status     `json:"status"`
+	TraceID     string     `json:"trace_id,omitempty"`
+	TraceParent string     `json:"-"`
+	TraceState  string     `json:"-"`
 }
 
 type Store interface {

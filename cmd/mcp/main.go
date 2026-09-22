@@ -95,7 +95,7 @@ func main() {
 		logger.Error("listen", "error", err)
 		return
 	}
-	httpServer := &http.Server{Handler: server.Handler(), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
+	httpServer := &http.Server{Handler: otelhttp.NewHandler(server.Handler(), "incidentpilot.mcp.http"), ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 8 << 10}
 	go func() {
 		<-ctx.Done()
 		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

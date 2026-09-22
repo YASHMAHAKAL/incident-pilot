@@ -270,9 +270,15 @@ spec:
             limits: {memory: 512Mi}
           volumeMounts:
             - {name: datasources, mountPath: /etc/grafana/provisioning/datasources, readOnly: true}
+            - {name: dashboard-provider, mountPath: /etc/grafana/provisioning/dashboards, readOnly: true}
+            - {name: dashboards, mountPath: /var/lib/grafana/dashboards, readOnly: true}
       volumes:
         - name: datasources
           configMap: {name: grafana-datasources}
+        - name: dashboard-provider
+          configMap: {name: grafana-dashboard-provider}
+        - name: dashboards
+          configMap: {name: grafana-incidentpilot-dashboard}
 ---
 apiVersion: v1
 kind: Service

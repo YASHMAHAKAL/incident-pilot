@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 
 	"incidentpilot/internal/remediation"
+	"incidentpilot/internal/telemetry"
 )
 
 type WorkloadInput struct {
@@ -88,6 +89,7 @@ type Server struct {
 	token      string
 	logger     *slog.Logger
 	calls      metric.Int64Counter
+	errors     metric.Int64Counter
 }
 
 type RemediationRequester interface {
@@ -109,7 +111,11 @@ func NewServerWithRemediation(backend Backend, remediator RemediationRequester, 
 	if err != nil {
 		return nil, err
 	}
-	return &Server{backend: backend, remediator: remediator, token: token, logger: logger, calls: calls}, nil
+	errorsCounter, err := otel.Meter("incidentpilot/mcp").Int64Counter("incidentpilot_tool_errors_total")
+	if err != nil {
+		return nil, err
+	}
+	return &Server{backend: backend, remediator: remediator, token: token, logger: logger, calls: calls, errors: errorsCounter}, nil
 }
 
 func (s *Server) instrument(ctx context.Context, name string, f func(context.Context) (Result, error)) (*mcp.CallToolResult, Result, error) {
@@ -129,10 +135,11 @@ func (s *Server) instrument(ctx context.Context, name string, f func(context.Con
 	if err != nil {
 		status = "error"
 		span.RecordError(err)
+		s.errors.Add(ctx, 1, metric.WithAttributes(attribute.String("tool", name)))
 	}
 	span.SetAttributes(attribute.String("mcp.tool", name), attribute.String("mcp.status", status))
 	s.calls.Add(ctx, 1, metric.WithAttributes(attribute.String("tool", name), attribute.String("status", status)))
-	s.logger.InfoContext(ctx, "mcp tool", "tool", name, "status", status, "duration_ms", time.Since(started).Milliseconds())
+	s.logger.InfoContext(ctx, "mcp tool", "tool", name, "status", status, "duration_ms", time.Since(started).Milliseconds(), "trace_id", telemetry.TraceID(ctx))
 	return nil, result, err
 }
 

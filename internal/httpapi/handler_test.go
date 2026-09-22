@@ -12,6 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/remediation"
@@ -120,6 +124,32 @@ func TestWebhookValidatesAndNormalizes(t *testing.T) {
 	}
 	if store.signals[1].Status != incident.StatusResolved || store.signals[1].ResolvedAt == nil || !store.signals[1].ResolvedAt.Equal(time.Date(2026, 9, 19, 0, 2, 0, 0, time.UTC)) {
 		t.Fatalf("unexpected resolved signal: %+v", store.signals[1])
+	}
+}
+
+func TestWebhookPersistsIncomingTraceContext(t *testing.T) {
+	previousProvider, previousPropagator := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())))
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		otel.SetTextMapPropagator(previousPropagator)
+	})
+
+	store := &fakeStore{}
+	handler := Handler(store, "long-local-test-token", slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/alerts/alertmanager", bytes.NewReader(testWebhook("firing")))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer long-local-test-token")
+	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, req)
+	if response.Code != http.StatusAccepted || len(store.signals) != 1 {
+		t.Fatalf("trace webhook failed: %d %s", response.Code, response.Body.String())
+	}
+	signal := store.signals[0]
+	if signal.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" || signal.TraceParent == "" {
+		t.Fatalf("incoming trace context was not persisted: %+v", signal)
 	}
 }
 

@@ -67,7 +67,7 @@ func (store *Postgres) Migrate(ctx context.Context) error {
 	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY)"); err != nil {
 		return fmt.Errorf("create migration ledger: %w", err)
 	}
-	for version, name := range []string{"migrations/001_incidents.sql", "migrations/002_evidence.sql", "migrations/003_investigations.sql", "migrations/004_remediation.sql", "migrations/005_github_remediation.sql"} {
+	for version, name := range []string{"migrations/001_incidents.sql", "migrations/002_evidence.sql", "migrations/003_investigations.sql", "migrations/004_remediation.sql", "migrations/005_github_remediation.sql", "migrations/006_trace_context.sql"} {
 		version++
 		var applied bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)", version).Scan(&applied); err != nil {
@@ -90,12 +90,12 @@ func (store *Postgres) Migrate(ctx context.Context) error {
 	return tx.Commit(ctx)
 }
 
-const incidentColumns = "id::text, fingerprint, alert_name, namespace, service, severity, started_at, detected_at, resolved_at, status"
+const incidentColumns = "id::text, fingerprint, alert_name, namespace, service, severity, started_at, detected_at, resolved_at, status, COALESCE(trace_id,''), COALESCE(traceparent,''), COALESCE(tracestate,'')"
 
 func scanIncident(row pgx.Row) (incident.Incident, error) {
 	var result incident.Incident
 	var status string
-	err := row.Scan(&result.ID, &result.Fingerprint, &result.AlertName, &result.Namespace, &result.Service, &result.Severity, &result.StartedAt, &result.DetectedAt, &result.ResolvedAt, &status)
+	err := row.Scan(&result.ID, &result.Fingerprint, &result.AlertName, &result.Namespace, &result.Service, &result.Severity, &result.StartedAt, &result.DetectedAt, &result.ResolvedAt, &status, &result.TraceID, &result.TraceParent, &result.TraceState)
 	result.Status = incident.Status(status)
 	return result, err
 }
@@ -108,14 +108,17 @@ func (store *Postgres) Upsert(ctx context.Context, signal incident.Signal) (inci
 		resolvedAt = signal.ResolvedAt
 	}
 	row := store.pool.QueryRow(ctx, `
-INSERT INTO incidents (fingerprint, alert_name, namespace, service, severity, started_at, resolved_at, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO incidents (fingerprint, alert_name, namespace, service, severity, started_at, resolved_at, status, trace_id, traceparent, tracestate)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULLIF($9,''), NULLIF($10,''), NULLIF($11,''))
 ON CONFLICT (fingerprint, started_at) DO UPDATE
 SET status = CASE WHEN incidents.status = 'RESOLVED' THEN 'RESOLVED' ELSE EXCLUDED.status END,
     resolved_at = COALESCE(incidents.resolved_at, EXCLUDED.resolved_at),
+	trace_id = COALESCE(incidents.trace_id, EXCLUDED.trace_id),
+	traceparent = COALESCE(incidents.traceparent, EXCLUDED.traceparent),
+	tracestate = COALESCE(incidents.tracestate, EXCLUDED.tracestate),
     updated_at = now()
 RETURNING `+incidentColumns,
-		signal.Fingerprint, signal.AlertName, signal.Namespace, signal.Service, signal.Severity, signal.StartedAt, resolvedAt, signal.Status)
+		signal.Fingerprint, signal.AlertName, signal.Namespace, signal.Service, signal.Severity, signal.StartedAt, resolvedAt, signal.Status, signal.TraceID, signal.TraceParent, signal.TraceState)
 	result, err := scanIncident(row)
 	if err != nil {
 		return incident.Incident{}, fmt.Errorf("upsert incident: %w", err)

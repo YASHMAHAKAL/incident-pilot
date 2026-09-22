@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/llm"
@@ -156,6 +160,28 @@ func TestImagePullInvestigationUsesInitialEvidenceAndCitations(t *testing.T) {
 	}
 	if reports.saved.ID != report.ID || len(reports.saved.EvidenceIDs) != 3 {
 		t.Fatal("image-pull investigation and evidence references were not persisted")
+	}
+}
+
+func TestInvestigationContinuesPersistedIncidentTrace(t *testing.T) {
+	previousProvider, previousPropagator := otel.GetTracerProvider(), otel.GetTextMapPropagator()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.AlwaysSample())))
+	otel.SetTextMapPropagator(propagation.TraceContext{})
+	t.Cleanup(func() {
+		otel.SetTracerProvider(previousProvider)
+		otel.SetTextMapPropagator(previousPropagator)
+	})
+
+	investigator, _, _, _ := testImageAgent([]string{deploymentEvidenceID, podEvidenceID, eventEvidenceID})
+	store := investigator.Incidents.(testIncidents)
+	store.inc.TraceParent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	investigator.Incidents = store
+	report, err := investigator.Run(context.Background(), testIncidentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.TraceID != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("investigation did not continue incident trace: %+v", report)
 	}
 }
 

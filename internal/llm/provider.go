@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 )
 
 const (
@@ -120,9 +121,19 @@ type httpProvider struct {
 }
 
 func (p *httpProvider) Chat(ctx context.Context, req ChatRequest) (ChatResponse, error) {
+	started := time.Now()
+	status := "error"
 	ctx, span := otel.Tracer("incidentpilot/llm").Start(ctx, "llm.chat")
-	span.SetAttributes(attribute.String("llm.provider", p.config.Provider))
-	defer span.End()
+	span.SetAttributes(attribute.String("llm.provider", p.config.Provider), attribute.String("llm.model", p.config.Model))
+	meter := otel.Meter("incidentpilot/llm")
+	requests, _ := meter.Int64Counter("incidentpilot_llm_requests_total")
+	durations, _ := meter.Float64Histogram("incidentpilot_llm_request_duration_seconds", metric.WithUnit("s"))
+	labels := metric.WithAttributes(attribute.String("provider", p.config.Provider), attribute.String("model", p.config.Model))
+	requests.Add(ctx, 1, labels)
+	defer func() {
+		durations.Record(ctx, time.Since(started).Seconds(), metric.WithAttributes(attribute.String("provider", p.config.Provider), attribute.String("model", p.config.Model), attribute.String("status", status)))
+		span.End()
+	}()
 	if req.Model == "" {
 		req.Model = p.config.Model
 	}
@@ -198,6 +209,10 @@ func (p *httpProvider) Chat(ctx context.Context, req ChatRequest) (ChatResponse,
 		return ChatResponse{}, err
 	}
 	span.SetAttributes(attribute.Int("llm.input_tokens", result.Usage.InputTokens), attribute.Int("llm.output_tokens", result.Usage.OutputTokens))
+	tokens, _ := meter.Int64Counter("incidentpilot_llm_tokens_total")
+	tokens.Add(ctx, int64(result.Usage.InputTokens), metric.WithAttributes(attribute.String("provider", p.config.Provider), attribute.String("model", p.config.Model), attribute.String("direction", "input")))
+	tokens.Add(ctx, int64(result.Usage.OutputTokens), metric.WithAttributes(attribute.String("provider", p.config.Provider), attribute.String("model", p.config.Model), attribute.String("direction", "output")))
+	status = "ok"
 	return result, nil
 }
 
