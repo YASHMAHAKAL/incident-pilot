@@ -65,6 +65,17 @@ func TestGenerateMemoryLimitPatchChangesOnlyExpectedScalar(t *testing.T) {
 	}
 }
 
+func TestGenerateMemoryLimitPatchSupportsGitOpsHelmValues(t *testing.T) {
+	content := []byte("demo:\n  payments:\n    resources:\n      requests: {memory: 32Mi}\n      limits: {memory: 48Mi}\n")
+	patched, err := GenerateMemoryLimitPatch(content, proposal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(patched), "limits: {memory: 128Mi}") || strings.Contains(string(patched), "limits: {memory: 48Mi}") {
+		t.Fatalf("unexpected Helm values patch: %s", patched)
+	}
+}
+
 func TestCreatePullRequestUsesConstrainedGitHubSequence(t *testing.T) {
 	const baseSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const blobSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"

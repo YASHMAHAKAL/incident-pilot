@@ -1,0 +1,48 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opentelemetry-collector
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+    chart: opentelemetry-collector
+    targetRevision: 0.173.1
+    helm:
+      valuesObject:
+        mode: daemonset
+        fullnameOverride: opentelemetry-collector
+        image:
+          repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib
+        command: {name: otelcol-contrib}
+        service: {enabled: true}
+        ports:
+          metrics: {enabled: true, containerPort: 8889, servicePort: 8889, protocol: TCP}
+        serviceMonitor:
+          enabled: true
+          extraLabels: {release: monitoring}
+        config:
+          receivers:
+            otlp:
+              protocols:
+                grpc: {endpoint: 0.0.0.0:4317}
+                http: {endpoint: 0.0.0.0:4318}
+          processors:
+            batch: {}
+            memory_limiter: {check_interval: 5s, limit_percentage: 80, spike_limit_percentage: 25}
+          exporters:
+            otlphttp/tempo: {endpoint: http://tempo:4318}
+            otlphttp/loki: {endpoint: http://loki:3100/otlp}
+            prometheus: {endpoint: 0.0.0.0:8889}
+          service:
+            pipelines:
+              traces: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlphttp/tempo]}
+              metrics: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [prometheus]}
+              logs: {receivers: [otlp], processors: [memory_limiter, batch], exporters: [otlphttp/loki]}
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: incidentpilot-observability
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true]

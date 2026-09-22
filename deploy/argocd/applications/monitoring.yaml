@@ -1,0 +1,50 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  finalizers: [resources-finalizer.argocd.argoproj.io]
+  annotations: {argocd.argoproj.io/sync-wave: "0"}
+spec:
+  project: default
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: 91.4.0
+    helm:
+      valuesObject:
+        grafana:
+          persistence: {enabled: true, size: 10Gi}
+        prometheus:
+          prometheusSpec:
+            retention: 7d
+            storageSpec:
+              volumeClaimTemplate:
+                spec:
+                  accessModes: [ReadWriteOnce]
+                  resources: {requests: {storage: 30Gi}}
+        alertmanager:
+          alertmanagerSpec:
+            secrets: [incidentpilot-alertmanager-auth]
+          config:
+            route:
+              receiver: incidentpilot
+              group_by: [alertname, namespace, service]
+              group_wait: 10s
+              group_interval: 30s
+              repeat_interval: 15m
+            receivers:
+              - name: incidentpilot
+                webhook_configs:
+                  - url: http://incidentpilot-api.incidentpilot-system.svc.cluster.local:8080/api/v1/alerts/alertmanager
+                    send_resolved: true
+                    http_config:
+                      authorization:
+                        type: Bearer
+                        credentials_file: /etc/alertmanager/secrets/incidentpilot-alertmanager-auth/token
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: incidentpilot-observability
+  syncPolicy:
+    automated: {prune: true, selfHeal: true}
+    syncOptions: [CreateNamespace=true, ServerSideApply=true]

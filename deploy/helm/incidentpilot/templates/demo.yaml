@@ -1,0 +1,127 @@
+{{- if .Values.demo.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: orders-config, namespace: {{ .Values.demoNamespace }}}
+data: {order_mode: normal}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: frontend, namespace: {{ .Values.demoNamespace }}}
+spec:
+  selector: {app: frontend}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: frontend, namespace: {{ .Values.demoNamespace }}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: frontend}}
+  template:
+    metadata: {labels: {app: frontend}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: frontend
+          image: {{ .Values.demo.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            {{- include "incidentpilot.securityContext" . | nindent 12 }}
+          env:
+            - {name: DEMO_ROLE, value: frontend}
+            - {name: DEMO_UPSTREAM_URL, value: "http://orders-api:8080"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.runtime.otlpEndpoint | quote }}}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          resources:
+            {{- toYaml .Values.demo.frontend.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: orders-api, namespace: {{ .Values.demoNamespace }}}
+spec:
+  selector: {app: orders-api}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: orders-api, namespace: {{ .Values.demoNamespace }}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: orders-api}}
+  template:
+    metadata: {labels: {app: orders-api}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: orders-api
+          image: {{ .Values.demo.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            {{- include "incidentpilot.securityContext" . | nindent 12 }}
+          env:
+            - {name: DEMO_ROLE, value: orders-api}
+            - {name: DEMO_UPSTREAM_URL, value: "http://payments-api:8080"}
+            - name: DEMO_ORDER_MODE
+              valueFrom: {configMapKeyRef: {name: orders-config, key: order_mode}}
+            - {name: DEMO_ORDER_CPU_BURN_MS, value: "0"}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.runtime.otlpEndpoint | quote }}}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          resources:
+            {{- toYaml .Values.demo.orders.resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: payments-api, namespace: {{ .Values.demoNamespace }}}
+spec:
+  selector: {app: payments-api}
+  ports: [{name: http, port: 8080, targetPort: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: payments-api, namespace: {{ .Values.demoNamespace }}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: payments-api}}
+  template:
+    metadata: {labels: {app: payments-api}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: payments-api
+          image: {{ .Values.demo.image | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            {{- include "incidentpilot.securityContext" . | nindent 12 }}
+          env:
+            - {name: DEMO_ROLE, value: payments-api}
+            - {name: DEMO_PAYMENT_WORKING_SET_MIB, value: "72"}
+            - {name: DEMO_PAYMENT_MODE, value: normal}
+            - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.runtime.otlpEndpoint | quote }}}
+          ports: [{name: http, containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          resources:
+            {{- toYaml .Values.demo.payments.resources | nindent 12 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: traffic-generator, namespace: {{ .Values.demoNamespace }}}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: traffic-generator}}
+  template:
+    metadata: {labels: {app: traffic-generator}}
+    spec:
+      securityContext: {runAsNonRoot: true, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: traffic-generator
+          image: {{ .Values.demo.trafficImage | quote }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            {{- include "incidentpilot.securityContext" . | nindent 12 }}
+          env: [{name: TRAFFIC_TARGET_URL, value: "http://frontend:8080/checkout"}]
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+            limits: {memory: 64Mi}
+{{- end }}

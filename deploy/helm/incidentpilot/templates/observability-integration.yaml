@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: incidentpilot-observability
+spec:
+  type: ExternalName
+  externalName: monitoring-kube-prometheus-prometheus.incidentpilot-observability.svc.cluster.local
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: incidentpilot-demo
+  namespace: incidentpilot-observability
+  labels:
+    release: monitoring
+spec:
+  groups:
+    - name: incidentpilot-demo
+      rules:
+        - alert: DemoCheckoutErrors
+          expr: sum(rate(demo_requests_total{service="frontend",route="checkout",status=~"5.."}[1m])) > 0
+          for: 15s
+          labels:
+            severity: warning
+            namespace: {{ .Values.demoNamespace | quote }}
+            service: frontend
+          annotations:
+            summary: Checkout requests are failing
+        - alert: DemoImagePullBackOff
+          expr: max by (namespace) (kube_pod_container_status_waiting_reason{namespace={{ .Values.demoNamespace | quote }},container="orders-api",reason="ImagePullBackOff"}) > 0
+          for: 15s
+          labels:
+            severity: warning
+            namespace: {{ .Values.demoNamespace | quote }}
+            service: orders-api
+          annotations:
+            summary: orders-api cannot pull its configured image

@@ -1,0 +1,56 @@
+{{- if .Values.postgresql.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None
+  selector: {app.kubernetes.io/name: incidentpilot-postgres}
+  ports: [{name: postgres, port: 5432, targetPort: postgres}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: incidentpilot-postgres
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: incidentpilot-postgres}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: incidentpilot-postgres
+        {{- include "incidentpilot.labels" . | nindent 8 }}
+    spec:
+      securityContext: {runAsNonRoot: true, fsGroup: 70, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: postgres
+          image: {{ .Values.postgresql.image | quote }}
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            runAsNonRoot: true
+            runAsUser: 70
+          env:
+            - {name: POSTGRES_USER, value: incidentpilot}
+            - {name: POSTGRES_DB, value: incidentpilot}
+            - name: POSTGRES_PASSWORD
+              valueFrom: {secretKeyRef: {name: {{ .Values.runtime.existingSecret }}, key: postgres_password}}
+            - {name: PGDATA, value: /var/lib/postgresql/data/pgdata}
+          ports: [{name: postgres, containerPort: 5432}]
+          readinessProbe: {exec: {command: [pg_isready, -U, incidentpilot, -d, incidentpilot]}}
+          resources:
+            {{- toYaml .Values.postgresql.resources | nindent 12 }}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- if .Values.postgresql.storageClassName }}
+        storageClassName: {{ .Values.postgresql.storageClassName | quote }}
+        {{- end }}
+        resources:
+          requests: {storage: {{ .Values.postgresql.storage }}}
+{{- end }}

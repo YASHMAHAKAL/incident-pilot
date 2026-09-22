@@ -411,8 +411,11 @@ func GenerateMemoryLimitPatch(content []byte, proposal remediation.Proposal) ([]
 			}
 		}
 	}
+	if len(matches) == 0 {
+		matches = helmValuesMemoryLimit(content, proposal)
+	}
 	if len(matches) != 1 || matches[0].Value != proposal.Change.Before || matches[0].Line < 1 || matches[0].Column < 1 {
-		return nil, errors.New("repository manifest does not contain exactly one expected memory limit")
+		return nil, errors.New("repository manifest or Helm values do not contain exactly one expected memory limit")
 	}
 	lines := bytes.SplitAfter(content, []byte("\n"))
 	lineIndex, column := matches[0].Line-1, matches[0].Column-1
@@ -426,6 +429,19 @@ func GenerateMemoryLimitPatch(content []byte, proposal remediation.Proposal) ([]
 		return nil, errors.New("repository patch made no expected change")
 	}
 	return patched, nil
+}
+
+func helmValuesMemoryLimit(content []byte, proposal remediation.Proposal) []*yaml.Node {
+	var document yaml.Node
+	if yaml.Unmarshal(content, &document) != nil {
+		return nil
+	}
+	root := documentRoot(&document)
+	memory := mappingValue(mappingValue(mappingValue(mappingValue(mappingValue(root, "demo"), "payments"), "resources"), "limits"), "memory")
+	if memory == nil || memory.Kind != yaml.ScalarNode || memory.Value != proposal.Change.Before {
+		return nil
+	}
+	return []*yaml.Node{memory}
 }
 
 func documentRoot(document *yaml.Node) *yaml.Node {

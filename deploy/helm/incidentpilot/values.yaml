@@ -1,0 +1,51 @@
+imagePullPolicy: IfNotPresent
+
+api:
+  image: ghcr.io/yashmahakal/incidentpilot-api:latest
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
+mcp:
+  image: ghcr.io/yashmahakal/incidentpilot-mcp:latest
+  replicas: 2
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}
+
+runtime:
+  existingSecret: incidentpilot-runtime
+  githubSecret: ""
+  environment: production
+  repository: YASHMAHAKAL/incident-pilot
+  remediationPath: deploy/helm/incidentpilot/values.yaml
+  otlpEndpoint: http://opentelemetry-collector.incidentpilot-observability.svc.cluster.local:4318
+
+postgresql:
+  enabled: true
+  image: postgres:17.11-alpine3.24
+  storage: 20Gi
+  storageClassName: ""
+  resources:
+    requests: {cpu: 250m, memory: 512Mi}
+    limits: {cpu: "1", memory: 2Gi}
+
+demoNamespace: incidentpilot-demo
+
+demo:
+  enabled: true
+  image: ghcr.io/yashmahakal/incidentpilot-demo:latest
+  trafficImage: ghcr.io/yashmahakal/incidentpilot-traffic:latest
+  frontend:
+    resources:
+      requests: {cpu: 25m, memory: 32Mi}
+      limits: {memory: 128Mi}
+  orders:
+    resources:
+      requests: {cpu: 25m, memory: 32Mi}
+      limits: {memory: 128Mi}
+  payments:
+    resources:
+      requests: {cpu: 25m, memory: 32Mi}
+      limits: {memory: 128Mi}

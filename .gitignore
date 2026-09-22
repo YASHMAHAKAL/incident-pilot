@@ -3,3 +3,9 @@
 .env.*
 !.env.example
 Groq key present
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+!*.tfvars.example

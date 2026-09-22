@@ -1,0 +1,56 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.demoNamespace }}
+  labels:
+    {{- include "incidentpilot.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: incidentpilot-observability
+  labels:
+    {{- include "incidentpilot.labels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: incidentpilot-mcp
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "incidentpilot.labels" . | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: incidentpilot-reader
+  namespace: {{ .Values.demoNamespace }}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, services]
+    verbs: [get, list]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [orders-config]
+    verbs: [get]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: incidentpilot-mcp-reader
+  namespace: {{ .Values.demoNamespace }}
+subjects:
+  - kind: ServiceAccount
+    name: incidentpilot-mcp
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: incidentpilot-reader
+  apiGroup: rbac.authorization.k8s.io
