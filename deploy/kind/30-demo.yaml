@@ -108,7 +108,7 @@ spec:
             httpGet: {path: /healthz, port: http}
           resources:
             requests: {cpu: 25m, memory: 32Mi}
-            limits: {memory: 128Mi}
+            limits: {memory: 48Mi}
 ---
 apiVersion: v1
 kind: Service
