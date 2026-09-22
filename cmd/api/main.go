@@ -11,8 +11,11 @@ import (
 	"syscall"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
 	"incidentpilot/internal/config"
 	"incidentpilot/internal/evidence"
+	githubadapter "incidentpilot/internal/github"
 	"incidentpilot/internal/httpapi"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/policy"
@@ -83,7 +86,15 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		remediator = &remediation.Service{Source: postgres, Store: postgres, Evaluator: evaluator, Config: remediation.Config{Environment: cfg.Environment, Repository: cfg.Repository, AllowedPath: cfg.RemediationPath}}
+		var executor remediation.Executor
+		if cfg.GitHubWriteAPIURL != "" {
+			client := &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport), Timeout: 12 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}
+			executor, err = githubadapter.NewClient(client, cfg.GitHubWriteAPIURL, cfg.GitHubWriteToken, cfg.Repository, cfg.GitHubBaseBranch, cfg.RemediationPath)
+			if err != nil {
+				return err
+			}
+		}
+		remediator = &remediation.Service{Source: postgres, Store: postgres, Evaluator: evaluator, Executor: executor, Config: remediation.Config{Environment: cfg.Environment, Repository: cfg.Repository, AllowedPath: cfg.RemediationPath}}
 	}
 	server := &http.Server{
 		Handler:           httpapi.HandlerWithServices(store, evidenceStore, collector, remediator, cfg.WebhookToken, cfg.RemediationToken, logger),

@@ -48,6 +48,21 @@ func (failingEvaluator) Evaluate(context.Context, remediation.PolicyInput) (reme
 	return remediation.PolicyDecision{}, errors.New("policy unavailable")
 }
 
+type executor struct {
+	calls int
+	fail  bool
+}
+
+func (e *executor) CreatePullRequest(context.Context, remediation.Proposal, remediation.PolicyDecision) (remediation.PullRequest, error) {
+	e.calls++
+	result := remediation.PullRequest{Repository: "owner/repository", BaseBranch: "main", HeadBranch: "incidentpilot-oom-000000000000", Number: 7, URL: "https://github.com/owner/repository/pull/7", CommitSHA: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+	if e.fail {
+		result.FailureCode = "patch_not_applicable"
+		return result, errors.New("patch failed")
+	}
+	return result, nil
+}
+
 func safeRequest() remediation.Request {
 	return remediation.Request{
 		IncidentID: incidentID, InvestigationID: investigationID, Operation: "update_resource_limit",
@@ -68,7 +83,7 @@ func service(t *testing.T, targetStore *store) remediation.Service {
 			report:  agent.Report{ID: investigationID, IncidentID: incidentID, Status: agent.StatusRootCauseFound, RootCause: &agent.RootCause{Cause: "memory_limit_oom", EvidenceIDs: []string{evidenceID}}},
 			records: []evidence.Record{{ID: evidenceID, IncidentID: incidentID, Tool: "kubernetes_get_deployment", Source: "kubernetes/deployment", ResourceRef: "incidentpilot-demo/payments-api", Payload: []byte(`{"spec":{"template":{"spec":{"containers":[{"name":"payments-api","resources":{"limits":{"memory":"48Mi"}}}]}}}}`)}},
 		},
-		Store: targetStore, Evaluator: evaluator,
+		Store: targetStore, Evaluator: evaluator, Executor: &executor{},
 		Config: remediation.Config{Environment: "development", Repository: "owner/repository", AllowedPath: "deploy/kind/30-demo.yaml", Now: func() time.Time { return time.Date(2026, 9, 21, 1, 2, 3, 0, time.UTC) }},
 	}
 }
@@ -79,7 +94,7 @@ func TestRequestAllowsAndAuditsSafeProposal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Decision.Allowed || result.Proposal.Status != remediation.StatusPolicyAllowed || result.Audit.Outcome != "allowed" || targetStore.saves != 1 {
+	if !result.Decision.Allowed || result.Proposal.Status != remediation.StatusPRCreated || result.Audit.Decision != remediation.StatusPolicyAllowed || result.Audit.Outcome != "pr_created" || result.PullRequest == nil || result.PullRequest.Number != 7 || targetStore.saves != 1 {
 		t.Fatalf("unexpected result: %+v", result)
 	}
 	if !targetStore.input.RepositoryAllowed || !targetStore.input.PathAllowed || targetStore.input.RootCause != "memory_limit_oom" || !targetStore.input.ResourceChangeSafe {
@@ -106,16 +121,45 @@ func TestRequestPersistsPolicyDenials(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			targetStore := &store{}
+			executor := &executor{}
+			svc := service(t, targetStore)
+			svc.Executor = executor
 			request := safeRequest()
 			test.change(&request)
-			result, err := service(t, targetStore).Request(context.Background(), request)
+			result, err := svc.Request(context.Background(), request)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if result.Decision.Allowed || !contains(result.Decision.Reasons, test.reason) || result.Proposal.Status != remediation.StatusPolicyDenied || targetStore.saves != 1 {
+			if result.Decision.Allowed || !contains(result.Decision.Reasons, test.reason) || result.Proposal.Status != remediation.StatusPolicyDenied || result.Audit.Decision != remediation.StatusPolicyDenied || targetStore.saves != 1 || executor.calls != 0 {
 				t.Fatalf("unexpected denial: %+v", result)
 			}
 		})
+	}
+}
+
+func TestRequestPersistsGitHubFailureWithoutBypassingPolicy(t *testing.T) {
+	targetStore := &store{}
+	svc := service(t, targetStore)
+	svc.Executor = &executor{fail: true}
+	result, err := svc.Request(context.Background(), safeRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Decision.Allowed || result.Proposal.Status != remediation.StatusPRFailed || result.PullRequest == nil || result.PullRequest.FailureCode != "patch_not_applicable" || result.Audit.Outcome != "pr_failed" || targetStore.saves != 1 {
+		t.Fatalf("GitHub failure was not safely persisted: %+v", result)
+	}
+}
+
+func TestRequestWithoutGitHubConfigurationFailsClosed(t *testing.T) {
+	targetStore := &store{}
+	svc := service(t, targetStore)
+	svc.Executor = nil
+	result, err := svc.Request(context.Background(), safeRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Proposal.Status != remediation.StatusPRFailed || result.PullRequest == nil || result.PullRequest.FailureCode != "github_not_configured" {
+		t.Fatalf("missing GitHub executor did not fail closed: %+v", result)
 	}
 }
 

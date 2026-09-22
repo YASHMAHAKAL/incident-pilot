@@ -74,7 +74,8 @@ func main() {
 	}
 	var remediationClient investigation.RemediationRequester
 	if remediationEndpoint != "" {
-		remediationClient, err = investigation.NewRemediationClient(client, remediationEndpoint, remediationToken)
+		remediationHTTP := &http.Client{Transport: client.Transport, Timeout: 50 * time.Second, CheckRedirect: client.CheckRedirect}
+		remediationClient, err = investigation.NewRemediationClient(remediationHTTP, remediationEndpoint, remediationToken)
 		if err != nil {
 			logger.Error("remediation config", "error", err)
 			return

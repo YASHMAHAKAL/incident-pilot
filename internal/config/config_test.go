@@ -93,3 +93,28 @@ func TestParseRemediationConfiguration(t *testing.T) {
 		t.Fatal("partial remediation configuration accepted")
 	}
 }
+
+func TestParseGitHubRemediationConfiguration(t *testing.T) {
+	values := map[string]string{
+		"INCIDENTPILOT_DATABASE_URL":         "postgres://localhost/example",
+		"INCIDENTPILOT_WEBHOOK_TOKEN":        "long-local-test-token",
+		"INCIDENTPILOT_REMEDIATION_TOKEN":    "long-local-remediation-token",
+		"INCIDENTPILOT_ENVIRONMENT":          "development",
+		"INCIDENTPILOT_REPOSITORY":           "owner/repository",
+		"INCIDENTPILOT_REMEDIATION_PATH":     "deploy/kind/30-demo.yaml",
+		"INCIDENTPILOT_GITHUB_WRITE_API_URL": "https://api.github.com",
+		"INCIDENTPILOT_GITHUB_WRITE_TOKEN":   "github-write-token-for-tests",
+		"INCIDENTPILOT_GITHUB_BASE_BRANCH":   "main",
+	}
+	if _, err := Parse(func(key string) string { return values[key] }); err != nil {
+		t.Fatal(err)
+	}
+	values["INCIDENTPILOT_GITHUB_BASE_BRANCH"] = "feature/unsafe"
+	if _, err := Parse(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("unsafe GitHub base branch accepted")
+	}
+	delete(values, "INCIDENTPILOT_GITHUB_BASE_BRANCH")
+	if _, err := Parse(func(key string) string { return values[key] }); err == nil {
+		t.Fatal("partial GitHub remediation configuration accepted")
+	}
+}

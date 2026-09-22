@@ -281,7 +281,7 @@ func (s *Server) Handler() http.Handler {
 	if s.remediator != nil {
 		mcp.AddTool(server, &mcp.Tool{
 			Name:        "request_remediation",
-			Description: "Submit one evidence-linked remediation proposal for trusted validation, OPA policy evaluation, and durable audit. This does not mutate Kubernetes or create a pull request.",
+			Description: "Submit one evidence-linked proposal to the trusted validation, OPA, constrained GitHub pull-request, and durable-audit pipeline. This never mutates Kubernetes or merges a pull request.",
 			Annotations: &mcp.ToolAnnotations{ReadOnlyHint: false, DestructiveHint: &nondestructive, OpenWorldHint: &nondestructive},
 		}, func(ctx context.Context, _ *mcp.CallToolRequest, in remediation.Request) (*mcp.CallToolResult, remediation.Result, error) {
 			ctx, span := otel.Tracer("incidentpilot/mcp").Start(ctx, "mcp.request_remediation")

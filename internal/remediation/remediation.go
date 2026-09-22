@@ -25,16 +25,21 @@ import (
 const (
 	StatusPolicyAllowed = "POLICY_ALLOWED"
 	StatusPolicyDenied  = "POLICY_DENIED"
+	StatusPRCreated     = "PR_CREATED"
+	StatusPRFailed      = "PR_FAILED"
 )
 
 var ErrInvalidProposal = errors.New("invalid remediation proposal")
 
 var (
-	dnsLabelPattern   = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-	repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
-	pathPattern       = regexp.MustCompile(`^[A-Za-z0-9_./-]{1,256}$`)
-	operationPattern  = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
-	memoryPattern     = regexp.MustCompile(`^([1-9][0-9]{0,3})Mi$`)
+	dnsLabelPattern    = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+	repositoryPattern  = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
+	pathPattern        = regexp.MustCompile(`^[A-Za-z0-9_./-]{1,256}$`)
+	operationPattern   = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+	memoryPattern      = regexp.MustCompile(`^([1-9][0-9]{0,3})Mi$`)
+	branchPattern      = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+	commitPattern      = regexp.MustCompile(`^[0-9a-f]{40,64}$`)
+	failureCodePattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
 )
 
 type Target struct {
@@ -120,10 +125,25 @@ type AuditEvent struct {
 	CreatedAt     time.Time `json:"created_at"`
 }
 
+type PullRequest struct {
+	ID          string    `json:"id"`
+	Status      string    `json:"status"`
+	Repository  string    `json:"repository"`
+	BaseBranch  string    `json:"base_branch"`
+	HeadBranch  string    `json:"head_branch"`
+	Number      int       `json:"number,omitempty"`
+	URL         string    `json:"url,omitempty"`
+	CommitSHA   string    `json:"commit_sha,omitempty"`
+	Reused      bool      `json:"reused"`
+	FailureCode string    `json:"failure_code,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
 type Result struct {
-	Proposal Proposal       `json:"proposal"`
-	Decision PolicyDecision `json:"decision"`
-	Audit    AuditEvent     `json:"audit"`
+	Proposal    Proposal       `json:"proposal"`
+	Decision    PolicyDecision `json:"decision"`
+	PullRequest *PullRequest   `json:"pull_request,omitempty"`
+	Audit       AuditEvent     `json:"audit"`
 }
 
 type Source interface {
@@ -140,6 +160,10 @@ type Evaluator interface {
 	Evaluate(context.Context, PolicyInput) (PolicyDecision, error)
 }
 
+type Executor interface {
+	CreatePullRequest(context.Context, Proposal, PolicyDecision) (PullRequest, error)
+}
+
 type Config struct {
 	Environment string
 	Repository  string
@@ -151,6 +175,7 @@ type Service struct {
 	Source    Source
 	Store     Store
 	Evaluator Evaluator
+	Executor  Executor
 	Config    Config
 }
 
@@ -205,17 +230,50 @@ func (s Service) Request(ctx context.Context, request Request) (Result, error) {
 		now = s.Config.Now().UTC()
 	}
 	decision.ID, decision.EvaluatedAt = uuid.NewString(), now
-	status, outcome := StatusPolicyDenied, "denied"
+	proposal := Proposal{ID: uuid.NewString(), IncidentID: request.IncidentID, InvestigationID: request.InvestigationID, Operation: request.Operation, Target: request.Target, Change: request.Change, Reason: strings.TrimSpace(request.Reason), EvidenceIDs: append([]string(nil), request.EvidenceIDs...), Status: StatusPolicyDenied, CreatedAt: now}
+	outcome := "denied"
+	var pullRequest *PullRequest
 	if decision.Allowed {
-		status, outcome = StatusPolicyAllowed, "allowed"
+		proposal.Status, outcome = StatusPRFailed, "pr_failed"
+		action := PullRequest{ID: uuid.NewString(), Status: StatusPRFailed, Repository: s.Config.Repository, FailureCode: "github_not_configured", CreatedAt: now}
+		if s.Executor != nil {
+			created, createErr := s.Executor.CreatePullRequest(ctx, proposal, decision)
+			if createErr != nil {
+				span.RecordError(createErr)
+				if created.Repository == s.Config.Repository {
+					action.Repository = created.Repository
+				}
+				if branchPattern.MatchString(created.BaseBranch) {
+					action.BaseBranch = created.BaseBranch
+				}
+				if branchPattern.MatchString(created.HeadBranch) {
+					action.HeadBranch = created.HeadBranch
+				}
+				if failureCodePattern.MatchString(created.FailureCode) {
+					action.FailureCode = created.FailureCode
+				} else {
+					action.FailureCode = "github_action_failed"
+				}
+			} else if validCreatedPullRequest(created, s.Config.Repository) {
+				action = created
+				action.ID, action.Status, action.Repository, action.CreatedAt = uuid.NewString(), StatusPRCreated, s.Config.Repository, now
+				proposal.Status, outcome = StatusPRCreated, "pr_created"
+			} else {
+				action.FailureCode = "github_invalid_result"
+			}
+		}
+		pullRequest = &action
 	}
-	proposal := Proposal{ID: uuid.NewString(), IncidentID: request.IncidentID, InvestigationID: request.InvestigationID, Operation: request.Operation, Target: request.Target, Change: request.Change, Reason: request.Reason, EvidenceIDs: append([]string(nil), request.EvidenceIDs...), Status: status, CreatedAt: now}
 	traceID := ""
 	if spanContext := trace.SpanContextFromContext(ctx); spanContext.IsValid() {
 		traceID = spanContext.TraceID().String()
 	}
-	audit := AuditEvent{ID: uuid.NewString(), IncidentID: request.IncidentID, Actor: "incidentpilot-remediation", Action: "request_remediation", Resource: request.Target.Namespace + "/" + request.Target.Kind + "/" + request.Target.Name, Decision: status, PolicyVersion: decision.PolicyVersion, TraceID: traceID, Outcome: outcome, CreatedAt: now}
-	result := Result{Proposal: proposal, Decision: decision, Audit: audit}
+	auditDecision := StatusPolicyDenied
+	if decision.Allowed {
+		auditDecision = StatusPolicyAllowed
+	}
+	audit := AuditEvent{ID: uuid.NewString(), IncidentID: request.IncidentID, Actor: "incidentpilot-remediation", Action: "request_remediation", Resource: request.Target.Namespace + "/" + request.Target.Kind + "/" + request.Target.Name, Decision: auditDecision, PolicyVersion: decision.PolicyVersion, TraceID: traceID, Outcome: outcome, CreatedAt: now}
+	result := Result{Proposal: proposal, Decision: decision, PullRequest: pullRequest, Audit: audit}
 	if err := s.Store.SaveRemediationEvaluation(ctx, result, input); err != nil {
 		return Result{}, fmt.Errorf("persist remediation decision: %w", err)
 	}
@@ -225,7 +283,21 @@ func (s Service) Request(ctx context.Context, request Request) (Result, error) {
 		denials, _ := otel.Meter("incidentpilot/remediation").Int64Counter("incidentpilot_policy_denials_total")
 		denials.Add(ctx, 1)
 	}
+	if proposal.Status == StatusPRCreated {
+		created, _ := otel.Meter("incidentpilot/remediation").Int64Counter("incidentpilot_prs_created_total")
+		created.Add(ctx, 1)
+	}
 	return result, nil
+}
+
+func validCreatedPullRequest(result PullRequest, repository string) bool {
+	if result.Number < 1 || result.Number > 1_000_000_000 || result.Repository != repository || !branchPattern.MatchString(result.BaseBranch) || !branchPattern.MatchString(result.HeadBranch) || !commitPattern.MatchString(result.CommitSHA) {
+		return false
+	}
+	if len(result.URL) < 9 || len(result.URL) > 2048 || !strings.HasPrefix(result.URL, "https://") {
+		return false
+	}
+	return true
 }
 
 func derivePolicyInput(config Config, request Request, rootCause, observedLimit string) PolicyInput {

@@ -54,7 +54,14 @@ func (store *Postgres) SaveRemediationEvaluation(ctx context.Context, result rem
 	if err != nil {
 		return errors.New("encode audit event")
 	}
-	for _, payload := range [][]byte{proposalJSON, decisionJSON, inputJSON, auditJSON} {
+	var pullRequestJSON []byte
+	if result.PullRequest != nil {
+		pullRequestJSON, err = json.Marshal(result.PullRequest)
+		if err != nil {
+			return errors.New("encode remediation pull request")
+		}
+	}
+	for _, payload := range [][]byte{proposalJSON, decisionJSON, inputJSON, auditJSON, pullRequestJSON} {
 		if len(payload) > 64<<10 {
 			return errors.New("remediation record too large")
 		}
@@ -72,6 +79,11 @@ func (store *Postgres) SaveRemediationEvaluation(ctx context.Context, result rem
 	if _, err := tx.Exec(ctx, `INSERT INTO policy_decisions (id,proposal_id,allowed,policy_version,decision,policy_input,evaluated_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5::jsonb,$6::jsonb,$7)`, result.Decision.ID, result.Proposal.ID, result.Decision.Allowed, result.Decision.PolicyVersion, decisionJSON, inputJSON, result.Decision.EvaluatedAt); err != nil {
 		return fmt.Errorf("insert policy decision: %w", err)
 	}
+	if result.PullRequest != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO remediation_pull_requests (id,proposal_id,status,repository,base_branch,head_branch,pull_request,created_at) VALUES ($1::uuid,$2::uuid,$3,$4,$5,$6,$7::jsonb,$8)`, result.PullRequest.ID, result.Proposal.ID, result.PullRequest.Status, result.PullRequest.Repository, result.PullRequest.BaseBranch, result.PullRequest.HeadBranch, pullRequestJSON, result.PullRequest.CreatedAt); err != nil {
+			return fmt.Errorf("insert remediation pull request: %w", err)
+		}
+	}
 	if _, err := tx.Exec(ctx, `INSERT INTO audit_events (id,incident_id,proposal_id,actor,action,resource,decision,policy_version,trace_id,outcome,event,created_at) VALUES ($1::uuid,$2::uuid,$3::uuid,$4,$5,$6,$7,$8,NULLIF($9,''),$10,$11::jsonb,$12)`, result.Audit.ID, result.Audit.IncidentID, result.Proposal.ID, result.Audit.Actor, result.Audit.Action, result.Audit.Resource, result.Audit.Decision, result.Audit.PolicyVersion, result.Audit.TraceID, result.Audit.Outcome, auditJSON, result.Audit.CreatedAt); err != nil {
 		return fmt.Errorf("insert remediation audit event: %w", err)
 	}
@@ -85,7 +97,8 @@ func (store *Postgres) GetRemediation(ctx context.Context, id string) (remediati
 	ctx, span := otel.Tracer("incidentpilot/storage").Start(ctx, "remediation.get")
 	defer span.End()
 	var proposalJSON, decisionJSON, auditJSON []byte
-	err := store.pool.QueryRow(ctx, `SELECT p.proposal,d.decision,a.event FROM remediation_proposals p JOIN policy_decisions d ON d.proposal_id=p.id JOIN audit_events a ON a.proposal_id=p.id WHERE p.id=$1::uuid`, id).Scan(&proposalJSON, &decisionJSON, &auditJSON)
+	var pullRequestJSON []byte
+	err := store.pool.QueryRow(ctx, `SELECT p.proposal,d.decision,COALESCE(r.pull_request,'null'::jsonb),a.event FROM remediation_proposals p JOIN policy_decisions d ON d.proposal_id=p.id LEFT JOIN remediation_pull_requests r ON r.proposal_id=p.id JOIN audit_events a ON a.proposal_id=p.id WHERE p.id=$1::uuid`, id).Scan(&proposalJSON, &decisionJSON, &pullRequestJSON, &auditJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return remediation.Result{}, incident.ErrNotFound
 	}
@@ -93,7 +106,7 @@ func (store *Postgres) GetRemediation(ctx context.Context, id string) (remediati
 		return remediation.Result{}, fmt.Errorf("get remediation: %w", err)
 	}
 	var result remediation.Result
-	if json.Unmarshal(proposalJSON, &result.Proposal) != nil || json.Unmarshal(decisionJSON, &result.Decision) != nil || json.Unmarshal(auditJSON, &result.Audit) != nil {
+	if json.Unmarshal(proposalJSON, &result.Proposal) != nil || json.Unmarshal(decisionJSON, &result.Decision) != nil || json.Unmarshal(pullRequestJSON, &result.PullRequest) != nil || json.Unmarshal(auditJSON, &result.Audit) != nil {
 		return remediation.Result{}, errors.New("decode remediation result")
 	}
 	return result, nil

@@ -67,7 +67,7 @@ func (store *Postgres) Migrate(ctx context.Context) error {
 	if _, err := tx.Exec(ctx, "CREATE TABLE IF NOT EXISTS schema_migrations (version integer PRIMARY KEY)"); err != nil {
 		return fmt.Errorf("create migration ledger: %w", err)
 	}
-	for version, name := range []string{"migrations/001_incidents.sql", "migrations/002_evidence.sql", "migrations/003_investigations.sql", "migrations/004_remediation.sql"} {
+	for version, name := range []string{"migrations/001_incidents.sql", "migrations/002_evidence.sql", "migrations/003_investigations.sql", "migrations/004_remediation.sql", "migrations/005_github_remediation.sql"} {
 		version++
 		var applied bool
 		if err := tx.QueryRow(ctx, "SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)", version).Scan(&applied); err != nil {

@@ -1,6 +1,6 @@
 # Phase 10: policy-governed remediation
 
-Phase 10 adds one structured `request_remediation` boundary. It accepts a proposal, reconstructs security-relevant facts in trusted Go code, evaluates an embedded Rego policy, and atomically stores the proposal, policy input/decision, and audit event in PostgreSQL. An allowed result is authorization for a future PR-style action only. This phase never changes Kubernetes, writes a repository, or opens a pull request.
+Phase 10 introduced one structured `request_remediation` boundary. It accepts a proposal, reconstructs security-relevant facts in trusted Go code, evaluates an embedded Rego policy, and atomically stores the proposal, policy input/decision, and audit event in PostgreSQL. Phase 11 now continues an allowed decision into constrained GitHub patch and PR creation through the same boundary; see the [Phase 11 guide](phase-11-github-remediation.md). Neither phase mutates Kubernetes directly.
 
 ```text
 MCP request_remediation
@@ -46,7 +46,7 @@ With the API forwarded to port 18080, a proposal has this form:
 }
 ```
 
-`POST /api/v1/remediations` returns HTTP 201 for both policy-allowed and policy-denied valid proposals; the structured decision distinguishes them. `GET /api/v1/remediations/{proposal-id}` retrieves the durable result. Both endpoints require the remediation token, not the webhook token. Invalid or unverifiable proposals return a generic error and cannot reach policy execution.
+`POST /api/v1/remediations` returns HTTP 201 for valid proposals; the structured status distinguishes `POLICY_DENIED`, `PR_CREATED`, and `PR_FAILED`. `GET /api/v1/remediations/{proposal-id}` retrieves the durable result. Both endpoints require the remediation token, not the webhook token. Invalid or unverifiable proposals return a generic error and cannot reach policy execution.
 
 Only investigations created by Phase 10-aware binaries contain the trusted machine-readable cause key. Older persisted reports remain readable but fail closed with HTTP 422 if used for remediation; they are not inferred or silently backfilled from prose.
 
@@ -54,4 +54,4 @@ The embedded policy is compiled once at API startup and its prepared query is re
 
 ## Deliberate boundary
 
-Phase 10 proves that a safe PR-type proposal can be allowed and dangerous proposals are denied. It does not claim that the current local fault injection changed Git, so an allowed decision alone is not evidence that a repository patch is applicable. Phase 11 must re-read repository content, constrain the exact patch, and create a reviewable branch/commit/PR through this same decision boundary. It must not turn an allow result into a direct cluster mutation.
+Phase 10 proves that a safe PR-type proposal can be allowed and dangerous proposals are denied. An allow decision alone is not evidence that a repository patch is applicable. Phase 11 therefore re-reads repository content, constrains the exact patch, and creates a reviewable branch/commit/PR through this same decision boundary. It does not turn an allow result into a direct cluster mutation.

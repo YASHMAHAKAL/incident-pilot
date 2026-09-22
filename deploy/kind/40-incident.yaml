@@ -91,6 +91,11 @@ spec:
         - name: incidentpilot-api
           image: incidentpilot-api:local
           imagePullPolicy: Never
+          envFrom:
+            - secretRef:
+                # Optional Phase 11 GitHub write configuration. Never commit a real token.
+                name: incidentpilot-github-remediation
+                optional: true
           env:
             - name: INCIDENTPILOT_DATABASE_URL
               valueFrom:

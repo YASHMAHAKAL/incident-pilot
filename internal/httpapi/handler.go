@@ -275,7 +275,7 @@ func HandlerWithServices(store incident.Store, evidenceStore evidence.Store, col
 			http.Error(w, "unexpected data after remediation JSON body", http.StatusBadRequest)
 			return
 		}
-		ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		defer cancel()
 		result, err := remediator.Request(ctx, request)
 		if errors.Is(err, remediation.ErrInvalidProposal) {

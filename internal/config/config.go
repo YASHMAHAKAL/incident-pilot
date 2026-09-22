@@ -16,16 +16,19 @@ const (
 )
 
 type Config struct {
-	HTTPAddr         string
-	ShutdownTimeout  time.Duration
-	DatabaseURL      string
-	WebhookToken     string
-	MCPEndpoint      string
-	MCPToken         string
-	RemediationToken string
-	Environment      string
-	Repository       string
-	RemediationPath  string
+	HTTPAddr          string
+	ShutdownTimeout   time.Duration
+	DatabaseURL       string
+	WebhookToken      string
+	MCPEndpoint       string
+	MCPToken          string
+	RemediationToken  string
+	Environment       string
+	Repository        string
+	RemediationPath   string
+	GitHubWriteAPIURL string
+	GitHubWriteToken  string
+	GitHubBaseBranch  string
 }
 
 func Load() (Config, error) {
@@ -57,6 +60,9 @@ func Parse(getenv func(string) string) (Config, error) {
 	cfg.Environment = getenv("INCIDENTPILOT_ENVIRONMENT")
 	cfg.Repository = getenv("INCIDENTPILOT_REPOSITORY")
 	cfg.RemediationPath = getenv("INCIDENTPILOT_REMEDIATION_PATH")
+	cfg.GitHubWriteAPIURL = getenv("INCIDENTPILOT_GITHUB_WRITE_API_URL")
+	cfg.GitHubWriteToken = getenv("INCIDENTPILOT_GITHUB_WRITE_TOKEN")
+	cfg.GitHubBaseBranch = getenv("INCIDENTPILOT_GITHUB_BASE_BRANCH")
 	if (cfg.DatabaseURL == "") != (cfg.WebhookToken == "") {
 		return Config{}, fmt.Errorf("INCIDENTPILOT_DATABASE_URL and INCIDENTPILOT_WEBHOOK_TOKEN must be set together")
 	}
@@ -86,6 +92,20 @@ func Parse(getenv func(string) string) (Config, error) {
 	if remediationConfigured {
 		if len(cfg.RemediationToken) < 24 || cfg.DatabaseURL == "" || cfg.Environment == "" || !repositoryName(cfg.Repository) || !repositoryPath(cfg.RemediationPath) {
 			return Config{}, fmt.Errorf("remediation requires PostgreSQL, a 24-byte token, environment, owner/repository, and safe repository path")
+		}
+	}
+	githubValues := []string{cfg.GitHubWriteAPIURL, cfg.GitHubWriteToken, cfg.GitHubBaseBranch}
+	githubConfigured := false
+	for _, value := range githubValues {
+		githubConfigured = githubConfigured || value != ""
+	}
+	if githubConfigured {
+		parsed, err := url.Parse(cfg.GitHubWriteAPIURL)
+		if !remediationConfigured || err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || len(cfg.GitHubWriteToken) < 20 || !branchName(cfg.GitHubBaseBranch) {
+			return Config{}, fmt.Errorf("GitHub remediation requires the remediation pipeline, a fixed API URL, 20-byte write token, and safe base branch")
+		}
+		if parsed.Scheme == "http" && !localHTTPHost(parsed.Hostname()) {
+			return Config{}, fmt.Errorf("INCIDENTPILOT_GITHUB_WRITE_API_URL must use HTTPS outside loopback or the cluster")
 		}
 	}
 
@@ -127,4 +147,21 @@ func repositoryPath(value string) bool {
 		}
 	}
 	return true
+}
+
+func branchName(value string) bool {
+	if value == "" || len(value) > 128 || strings.Contains(value, "..") {
+		return false
+	}
+	for _, char := range value {
+		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("._-", char)) {
+			return false
+		}
+	}
+	return true
+}
+
+func localHTTPHost(host string) bool {
+	host = strings.ToLower(host)
+	return host == "localhost" || host == "127.0.0.1" || host == "::1" || strings.HasSuffix(host, ".svc") || strings.HasSuffix(host, ".svc.cluster.local")
 }
