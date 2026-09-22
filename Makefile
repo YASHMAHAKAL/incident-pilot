@@ -6,7 +6,7 @@ KUBECTL ?= kubectl
 KIND_NAME ?= incidentpilot
 KIND_CONTEXT := kind-$(KIND_NAME)
 
-.PHONY: fmt fmt-check vet test lint build check run container-build demo-images kind-create kind-load kind-deploy kind-refresh kind-up kind-status kind-down scenario-oom-inject scenario-oom-check scenario-oom-reset scenario-bad-image-inject scenario-bad-image-check scenario-bad-image-reset scenario-invalid-configmap-inject scenario-invalid-configmap-check scenario-invalid-configmap-reset scenario-broken-selector-inject scenario-broken-selector-check scenario-broken-selector-reset scenario-cpu-latency-inject scenario-cpu-latency-check scenario-cpu-latency-reset scenario-downstream-failure-inject scenario-downstream-failure-check scenario-downstream-failure-reset
+.PHONY: fmt fmt-check vet test lint build check eval eval-kind run container-build demo-images kind-create kind-load kind-deploy kind-refresh kind-up kind-status kind-down scenario-oom-inject scenario-oom-check scenario-oom-reset scenario-bad-image-inject scenario-bad-image-check scenario-bad-image-reset scenario-invalid-configmap-inject scenario-invalid-configmap-check scenario-invalid-configmap-reset scenario-broken-selector-inject scenario-broken-selector-check scenario-broken-selector-reset scenario-cpu-latency-inject scenario-cpu-latency-check scenario-cpu-latency-reset scenario-downstream-failure-inject scenario-downstream-failure-check scenario-downstream-failure-reset
 
 fmt:
 	$(GOFMT) -w .
@@ -28,8 +28,15 @@ build:
 	$(GO) build -buildvcs=false -o bin/incidentpilot-demo ./cmd/demo
 	$(GO) build -buildvcs=false -o bin/incidentpilot-traffic ./cmd/traffic
 	$(GO) build -buildvcs=false -o bin/incidentpilot-mcp ./cmd/mcp
+	$(GO) build -buildvcs=false -o bin/incidentpilot-eval ./cmd/eval
 
 check: lint test build
+
+eval:
+	$(GO) run -buildvcs=false ./cmd/eval -go $(GO)
+
+eval-kind:
+	KUBECTL=$(KUBECTL) sh evals/run-kind-scenarios.sh
 
 run:
 	$(GO) run -buildvcs=false ./cmd/api
