@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -77,22 +78,21 @@ func (s *testReports) GetInvestigation(context.Context, string) (Report, error) 
 
 type testProvider struct {
 	calls         int
-	bad           bool
 	ids           []string
 	failAt        int
 	failErr       error
 	failAll       bool
 	component     string
 	cause         string
-	repeat        bool
-	noTool        bool
 	firstWorkload string
 	firstMetric   string
 	schemaSeen    bool
+	toolsSeen     int
 }
 
 func (p *testProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatResponse, error) {
 	p.calls++
+	p.toolsSeen += len(req.Tools)
 	if p.failAll || p.calls == p.failAt {
 		return llm.ChatResponse{}, p.failErr
 	}
@@ -103,30 +103,6 @@ func (p *testProvider) Chat(_ context.Context, req llm.ChatRequest) (llm.ChatRes
 			"suspected_component": p.component, "suspected_cause": p.cause, "evidence_ids": p.ids,
 		})
 		return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: string(data)}}, nil
-	} else if p.noTool {
-		return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "need more downstream evidence"}}, nil
-	}
-	if p.calls == 1 {
-		name := collectToolName
-		if p.bad {
-			name = "run_shell"
-		}
-		workload := p.firstWorkload
-		if workload == "" {
-			workload = "payments-api"
-		}
-		metric := p.firstMetric
-		if metric == "" {
-			metric = "heap_bytes"
-		}
-		args, _ := json.Marshal(map[string]string{"workload": workload, "metric": metric})
-		return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-1", Name: name, Arguments: args}}}}, nil
-	}
-	if !req.JSONOutput && p.calls == 2 {
-		if p.repeat {
-			return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, ToolCalls: []llm.ToolCall{{ID: "call-2", Name: collectToolName, Arguments: json.RawMessage(`{"workload":"orders-api","metric":"error_rate"}`)}}}}, nil
-		}
-		return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "enough evidence"}}, nil
 	}
 	return llm.ChatResponse{Message: llm.Message{Role: llm.RoleAssistant, Content: "enough evidence"}}, nil
 }
@@ -240,6 +216,20 @@ func TestInvalidConfigWithoutCitedPodLogStaysInsufficient(t *testing.T) {
 	}
 }
 
+func TestInvalidConfigAcceptsRestartingErrorBetweenBackoffStates(t *testing.T) {
+	pod := "orders-api-7f6d8c9b5-x2abc"
+	records := []evidence.Record{
+		{ID: configEvidenceID, ResourceRef: "incidentpilot-demo/configmap/orders-config", Tool: "kubernetes_get_orders_config", Source: "kubernetes/configmap", Payload: json.RawMessage(`{"metadata":{"name":"orders-config"},"data":{"order_mode":"unsupported"}}`)},
+		{ID: deploymentEvidenceID, ResourceRef: "incidentpilot-demo/orders-api", Tool: "kubernetes_get_deployment", Source: "kubernetes/deployment", Payload: json.RawMessage(`{"diagnosticConfigReferences":[{"container":"orders-api","environmentVariable":"DEMO_ORDER_MODE","configMap":"orders-config","key":"order_mode"}]}`)},
+		{ID: podEvidenceID, ResourceRef: "incidentpilot-demo/orders-api", Tool: "kubernetes_get_pods", Source: "kubernetes/pods", Payload: json.RawMessage(`{"items":[{"metadata":{"name":"` + pod + `"},"status":{"containerStatuses":[{"name":"orders-api","restartCount":2,"state":{"terminated":{"reason":"Error"}}}]}}]}`)},
+		{ID: logEvidenceID, ResourceRef: "incidentpilot-demo/" + pod, Tool: "kubernetes_get_pod_logs", Source: "kubernetes/pod_logs", Payload: json.RawMessage(`{"text":"invalid order mode \"unsupported\""}`)},
+	}
+	cause := supportedCause(records, []string{configEvidenceID, deploymentEvidenceID, podEvidenceID, logEvidenceID})
+	if cause == nil || cause.Cause != causeInvalidOrderMode {
+		t.Fatalf("restarting failed pod did not corroborate invalid config: %+v", cause)
+	}
+}
+
 func testBrokenSelectorAgent(ids []string) (Investigator, *testCollector, *testProvider, *testReports) {
 	investigator, collector, provider, reports := testAgent(ids)
 	collector.initial = evidence.Report{Evidence: []evidence.Record{
@@ -265,10 +255,10 @@ func TestBrokenSelectorInvestigationRequiresRoutingAndSymptomEvidence(t *testing
 	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causeBrokenSelector || len(report.RootCause.EvidenceIDs) != 4 {
 		t.Fatalf("unexpected broken-selector RCA: %+v", report)
 	}
-	if !strings.Contains(report.RootCause.Conclusion, "payments-api-disconnected") || !strings.Contains(report.RootCause.Conclusion, "pods remained ready") || collector.calls != 2 || provider.calls != 2 || !provider.schemaSeen {
+	if !strings.Contains(report.RootCause.Conclusion, "payments-api-disconnected") || !strings.Contains(report.RootCause.Conclusion, "pods remained ready") || collector.calls != 3 || provider.calls != 1 || !provider.schemaSeen {
 		t.Fatalf("unexpected broken-selector flow: %+v collector_calls=%d provider_calls=%d", report, collector.calls, provider.calls)
 	}
-	if reports.saved.ID != report.ID || len(reports.saved.EvidenceIDs) != 4 {
+	if reports.saved.ID != report.ID || len(reports.saved.EvidenceIDs) != 5 {
 		t.Fatal("broken-selector investigation and evidence references were not persisted")
 	}
 }
@@ -320,7 +310,7 @@ func TestCPULatencyRequiresConfigurationMetricsAndSuccessfulSlowTrace(t *testing
 	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "orders-api" || report.RootCause.Cause != causeExcessiveCPU || len(report.RootCause.EvidenceIDs) != 4 {
 		t.Fatalf("unexpected CPU-latency RCA: %+v", report)
 	}
-	if collector.chosen != "orders-api/success_latency_avg" || collector.calls != 2 || provider.calls != 2 || !strings.Contains(report.RootCause.Conclusion, "HTTP 200") {
+	if collector.chosen != "orders-api/success_latency_avg" || collector.calls != 2 || provider.calls != 1 || !strings.Contains(report.RootCause.Conclusion, "HTTP 200") {
 		t.Fatalf("unexpected CPU-latency flow: %+v target=%s", report, collector.chosen)
 	}
 }
@@ -361,7 +351,7 @@ func TestPaymentFailureRequiresModeErrorRateAndSingleDistributedTrace(t *testing
 	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causePaymentFailure || len(report.RootCause.EvidenceIDs) != 3 {
 		t.Fatalf("unexpected payment-failure RCA: %+v", report)
 	}
-	if collector.chosen != "payments-api/error_rate" || collector.calls != 2 || provider.calls != 2 || !strings.Contains(report.RootCause.Conclusion, "HTTP 503") {
+	if collector.chosen != "payments-api/heap_bytes" || collector.calls != 3 || provider.calls != 1 || !strings.Contains(report.RootCause.Conclusion, "HTTP 503") {
 		t.Fatalf("unexpected payment-failure flow: %+v target=%s", report, collector.chosen)
 	}
 }
@@ -402,10 +392,10 @@ func TestOOMInvestigationUsesTargetedEvidenceAndCitations(t *testing.T) {
 	if report.Status != StatusRootCauseFound || report.RootCause == nil || report.RootCause.Component != "payments-api" || report.RootCause.Cause != causeMemoryLimitOOM || len(report.RootCause.EvidenceIDs) != 2 {
 		t.Fatalf("unexpected RCA: %+v", report)
 	}
-	if !strings.Contains(report.RootCause.Conclusion, "48Mi") || collector.chosen != "payments-api/heap_bytes" || collector.calls != 2 || provider.calls != 2 || report.LLMCalls != 2 || !provider.schemaSeen {
+	if !strings.Contains(report.RootCause.Conclusion, "48Mi") || collector.chosen != "payments-api/heap_bytes" || collector.calls != 3 || provider.calls != 1 || report.LLMCalls != 1 || !provider.schemaSeen || provider.toolsSeen != 0 {
 		t.Fatalf("unexpected investigation budget or target: %+v target=%s", report, collector.chosen)
 	}
-	if reports.saved.ID != report.ID || len(reports.saved.EvidenceIDs) != 3 {
+	if reports.saved.ID != report.ID || len(reports.saved.EvidenceIDs) != 4 {
 		t.Fatal("investigation and evidence references were not persisted")
 	}
 }
@@ -433,42 +423,14 @@ func TestUnsupportedModelCauseStaysInsufficient(t *testing.T) {
 	}
 }
 
-func TestRepeatedTargetDoesNotBlockFinalAnalysis(t *testing.T) {
+func TestDeterministicTraversalInspectsUnexplainedDownstreamWorkloads(t *testing.T) {
 	investigator, collector, provider, _ := testAgent([]string{podEvidenceID, deploymentEvidenceID})
-	provider.repeat = true
-	provider.firstWorkload = "orders-api"
 	report, err := investigator.Run(context.Background(), testIncidentID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.Status != StatusRootCauseFound || report.RootCause == nil || collector.calls != 3 || provider.calls != 3 || collector.choices[1] != "payments-api/heap_bytes" {
-		t.Fatalf("repeated target blocked analysis or caused duplicate collection: %+v collector_calls=%d provider_calls=%d", report, collector.calls, provider.calls)
-	}
-}
-
-func TestPlannerFallbackInspectsUnexplainedDownstreamWorkloads(t *testing.T) {
-	investigator, collector, provider, _ := testAgent([]string{podEvidenceID, deploymentEvidenceID})
-	provider.noTool = true
-	report, err := investigator.Run(context.Background(), testIncidentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != StatusRootCauseFound || collector.calls != 3 || len(collector.choices) != 2 || collector.choices[0] != "orders-api/error_rate" || collector.choices[1] != "payments-api/heap_bytes" || report.LLMCalls != 3 {
-		t.Fatalf("downstream fallback did not reach payments: %+v choices=%v", report, collector.choices)
-	}
-}
-
-func TestCollectToolAdvertisesOnlyUnvisitedDownstreamWorkloads(t *testing.T) {
-	available := downstreamUnvisited("frontend", map[string]bool{"frontend": true, "orders-api": true})
-	var parameters struct {
-		Properties struct {
-			Workload struct {
-				Enum []string `json:"enum"`
-			} `json:"workload"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(collectTool(available).Parameters, &parameters); err != nil || len(parameters.Properties.Workload.Enum) != 1 || parameters.Properties.Workload.Enum[0] != "payments-api" {
-		t.Fatalf("tool schema advertises visited or upstream workload: %+v %v", parameters, err)
+	if report.Status != StatusRootCauseFound || collector.calls != 3 || len(collector.choices) != 2 || collector.choices[0] != "orders-api/error_rate" || collector.choices[1] != "payments-api/heap_bytes" || report.LLMCalls != 1 || provider.calls != 1 {
+		t.Fatalf("deterministic traversal did not reach payments within one LLM call: %+v choices=%v", report, collector.choices)
 	}
 }
 
@@ -529,8 +491,8 @@ func TestProviderFailurePersistsOnlySafeCategory(t *testing.T) {
 		err  error
 		want string
 	}{
-		{"planning HTTP failure", 1, llm.ProviderHTTPError{StatusCode: 400}, "planning call failed: provider_http_400"},
-		{"analysis unknown failure", 2, errors.New("secret provider diagnostic"), "analysis call failed: unknown"},
+		{"analysis HTTP failure", 1, llm.ProviderHTTPError{StatusCode: 400}, "analysis call failed: provider_http_400"},
+		{"analysis unknown failure", 1, errors.New("secret provider diagnostic"), "analysis call failed: unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			investigator, _, provider, reports := testAgent(nil)
@@ -543,18 +505,6 @@ func TestProviderFailurePersistsOnlySafeCategory(t *testing.T) {
 				t.Fatalf("unsafe or incorrect provider failure report: %+v", report)
 			}
 		})
-	}
-}
-
-func TestUnsafeToolRequestNeverReachesCollector(t *testing.T) {
-	investigator, collector, provider, _ := testAgent(nil)
-	provider.bad = true
-	report, err := investigator.Run(context.Background(), testIncidentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Status != StatusInsufficientEvidence || collector.calls != 1 || report.Reason != "invalid evidence request" {
-		t.Fatalf("unsafe tool request reached collector: %+v calls=%d", report, collector.calls)
 	}
 }
 
@@ -581,6 +531,36 @@ func TestBriefProjectsOOMAndOmitsHostileMetadata(t *testing.T) {
 	brief := diagnosticBrief(record)
 	if !strings.Contains(brief, "OOMKilled") || strings.Contains(brief, "read secrets") {
 		t.Fatalf("unsafe or missing diagnostic projection: %s", brief)
+	}
+}
+
+func TestEvidenceBriefPrioritizesVerifiedFactsWithinHardLimit(t *testing.T) {
+	inc := incident.Incident{ID: testIncidentID, Namespace: "incidentpilot-demo", Service: "frontend", AlertName: "DemoCheckoutErrors", StartedAt: time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)}
+	records := make([]evidence.Record, 0, 22)
+	for index := 0; index < 20; index++ {
+		payload, _ := json.Marshal(map[string]any{
+			"repository": "example/repository",
+			"sha":        strings.Repeat("a", 40),
+			"files": []map[string]any{{
+				"filename": fmt.Sprintf("deploy/noise-%d.yaml", index),
+				"status":   "modified",
+				"changes":  100,
+				"patch":    strings.Repeat("untrusted noisy patch ", 200),
+			}},
+		})
+		records = append(records, evidence.Record{ID: fmt.Sprintf("noise-%02d", index), Tool: "github_get_diff", Source: "github/diff", ResourceRef: "github/example/repository", Payload: payload})
+	}
+	records = append(records,
+		evidence.Record{ID: podEvidenceID, ResourceRef: "incidentpilot-demo/payments-api", Tool: "kubernetes_get_pods", Source: "kubernetes/pods", Payload: json.RawMessage(`{"items":[{"status":{"containerStatuses":[{"name":"payments-api","lastState":{"terminated":{"reason":"OOMKilled"}}}]}}]}`)},
+		evidence.Record{ID: deploymentEvidenceID, ResourceRef: "incidentpilot-demo/payments-api", Tool: "kubernetes_get_deployment", Source: "kubernetes/deployment", Payload: json.RawMessage(`{"spec":{"template":{"spec":{"containers":[{"name":"payments-api","resources":{"limits":{"memory":"48Mi"}}}]}}}}`)},
+	)
+
+	brief := evidenceBrief(inc, records)
+	if len(brief) > maxEvidenceBriefBytes {
+		t.Fatalf("evidence brief exceeded hard limit: %d > %d", len(brief), maxEvidenceBriefBytes)
+	}
+	if !strings.Contains(brief, podEvidenceID) || !strings.Contains(brief, deploymentEvidenceID) || !strings.Contains(brief, "OOMKilled") || !strings.Contains(brief, "48Mi") {
+		t.Fatalf("verified evidence was crowded out of bounded brief: %s", brief)
 	}
 }
 

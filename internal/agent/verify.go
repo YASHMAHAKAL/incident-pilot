@@ -72,7 +72,23 @@ func verifyClaim(records []evidence.Record, cited []string, component, cause str
 }
 
 func evidenceAlreadySupportsCause(records []evidence.Record, cited []string) bool {
-	return verifyOOM(records, cited) != nil || verifyImagePull(records, cited) != nil || verifyInvalidOrderConfig(records, cited) != nil || verifyBrokenServiceSelector(records, cited) != nil || verifyExcessiveCPU(records, cited) != nil || verifyPaymentFailure(records, cited) != nil
+	return supportedCause(records, cited) != nil
+}
+
+func supportedCause(records []evidence.Record, cited []string) *RootCause {
+	for _, verify := range []func([]evidence.Record, []string) *RootCause{
+		verifyOOM,
+		verifyImagePull,
+		verifyInvalidOrderConfig,
+		verifyBrokenServiceSelector,
+		verifyExcessiveCPU,
+		verifyPaymentFailure,
+	} {
+		if cause := verify(records, cited); cause != nil {
+			return cause
+		}
+	}
+	return nil
 }
 
 func verifyExcessiveCPU(records []evidence.Record, cited []string) *RootCause {
@@ -503,11 +519,15 @@ func ordersCrashLoopPod(raw json.RawMessage) string {
 			} `json:"metadata"`
 			Status struct {
 				ContainerStatuses []struct {
-					Name  string `json:"name"`
-					State struct {
+					Name         string `json:"name"`
+					RestartCount int    `json:"restartCount"`
+					State        struct {
 						Waiting struct {
 							Reason string `json:"reason"`
 						} `json:"waiting"`
+						Terminated struct {
+							Reason string `json:"reason"`
+						} `json:"terminated"`
 					} `json:"state"`
 				} `json:"containerStatuses"`
 			} `json:"status"`
@@ -518,7 +538,7 @@ func ordersCrashLoopPod(raw json.RawMessage) string {
 	}
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == "orders-api" && status.State.Waiting.Reason == "CrashLoopBackOff" && imageReferencePattern.MatchString(pod.Metadata.Name) {
+			if status.Name == "orders-api" && (status.State.Waiting.Reason == "CrashLoopBackOff" || (status.State.Terminated.Reason == "Error" && status.RestartCount > 0)) && imageReferencePattern.MatchString(pod.Metadata.Name) {
 				return pod.Metadata.Name
 			}
 		}

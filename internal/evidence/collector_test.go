@@ -224,6 +224,13 @@ func TestOrdersCollectionReadsAllowlistedConfigAndObservedCrashLoopLogs(t *testi
 	}
 }
 
+func TestCrashLoopPodAcceptsRestartingErrorBetweenBackoffStates(t *testing.T) {
+	pod := crashLoopPod(json.RawMessage(`{"items":[{"metadata":{"name":"orders-api-7f6d8c9b5-x2abc"},"status":{"containerStatuses":[{"name":"orders-api","restartCount":2,"state":{"terminated":{"reason":"Error"}}}]}}]}`), "orders-api")
+	if pod != "orders-api-7f6d8c9b5-x2abc" {
+		t.Fatalf("terminated restart state was not recognized: %q", pod)
+	}
+}
+
 func TestChangeCollectionDoesNotTrustRevisionOutsideArgoHistory(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)

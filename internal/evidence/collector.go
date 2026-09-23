@@ -196,11 +196,15 @@ func crashLoopPod(raw json.RawMessage, workload string) string {
 			} `json:"metadata"`
 			Status struct {
 				ContainerStatuses []struct {
-					Name  string `json:"name"`
-					State struct {
+					Name         string `json:"name"`
+					RestartCount int    `json:"restartCount"`
+					State        struct {
 						Waiting struct {
 							Reason string `json:"reason"`
 						} `json:"waiting"`
+						Terminated struct {
+							Reason string `json:"reason"`
+						} `json:"terminated"`
 					} `json:"state"`
 				} `json:"containerStatuses"`
 			} `json:"status"`
@@ -211,7 +215,7 @@ func crashLoopPod(raw json.RawMessage, workload string) string {
 	}
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == workload && status.State.Waiting.Reason == "CrashLoopBackOff" && validPodName(pod.Metadata.Name, workload) {
+			if status.Name == workload && (status.State.Waiting.Reason == "CrashLoopBackOff" || (status.State.Terminated.Reason == "Error" && status.RestartCount > 0)) && validPodName(pod.Metadata.Name, workload) {
 				return pod.Metadata.Name
 			}
 		}
