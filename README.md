@@ -198,9 +198,8 @@ Run every reproducible fault scenario, including reset, with:
 make eval-kind
 ```
 
-See [the local testing guide](docs/phase-7-investigator.md) for the complete
-agent workflow and [scenario documentation](scenarios/oom-memory-limit/README.md)
-for each fault's expected evidence.
+Each [scenario README](scenarios/oom-memory-limit/README.md) describes its
+fault injection, expected evidence, and reset command.
 
 ## Remediation and PR testing
 
@@ -211,8 +210,9 @@ limit repair in `deploy/kind/30-demo.yaml`; broader changes are denied.
 A real PR additionally requires a GitHub fine-grained token restricted to this
 repository with Contents and Pull requests read/write, configured as the local
 `incidentpilot-github-remediation` Secret. Without it, the expected safe result
-is `PR_FAILED/github_not_configured`. Details and the exact proposal schema are
-in the [GitHub remediation guide](docs/phase-11-github-remediation.md).
+is `PR_FAILED/github_not_configured`. The remediation request must identify the
+verified incident/investigation, its exact cited evidence IDs, and the allowed
+`48Mi` to `128Mi` memory-limit change.
 
 ## Use with an existing cluster
 
@@ -222,33 +222,14 @@ container names, pod selectors, and allowed alerts. IncidentPilot creates only
 its own read-only RBAC binding in that application namespace; it does not read
 Secrets, execute into pods, or modify workloads.
 
-Start from [the external values example](deploy/helm/incidentpilot/values-external.example.yaml)
-and follow [the external-cluster onboarding guide](docs/onboarding-external-cluster.md).
+Start from [the external values example](deploy/helm/incidentpilot/values-external.example.yaml).
+Use the same validated profile JSON in the API, MCP, and one-shot agent; the
+chart passes it to the API and MCP automatically.
 
 The base [values.yaml](deploy/helm/incidentpilot/values.yaml) intentionally uses
 portable placeholders. For this repository's demo images and GitHub repository
 defaults, layer [values-demo.example.yaml](deploy/helm/incidentpilot/values-demo.example.yaml)
 on top. Neither file contains credentials.
-
-## Project documentation
-
-The `docs/` directory is intentionally kept in this repository. The README is
-the entry point; the documents below preserve design decisions, security
-boundaries, reproducible procedures, and deployment details without turning the
-README into an unmaintainable manual.
-
-- [Incident ingestion](docs/phase-3-incidents.md)
-- [MCP security boundary](docs/phase-4-mcp.md)
-- [Evidence model](docs/phase-5-evidence.md)
-- [LLM providers](docs/phase-6-llm.md)
-- [Investigator](docs/phase-7-investigator.md)
-- [Change intelligence](docs/phase-8-change-intelligence.md)
-- [RCA verification](docs/phase-9-rca.md)
-- [OPA remediation](docs/phase-10-remediation.md)
-- [GitHub PR remediation](docs/phase-11-github-remediation.md)
-- [Observability](docs/phase-12-observability.md)
-- [Evaluation](docs/phase-13-evaluation.md)
-- [AWS/EKS and GitOps deployment assets](docs/phase-14-aws.md)
 
 ## Current limits
 
