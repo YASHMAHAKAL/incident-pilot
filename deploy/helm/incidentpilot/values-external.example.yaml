@@ -1,4 +1,10 @@
 # Replace these examples before deployment. The application namespace exists already.
+api:
+  image: registry.example/incidentpilot-api:REPLACE_ME
+
+mcp:
+  image: registry.example/incidentpilot-mcp:REPLACE_ME
+
 demo:
   enabled: false
 
@@ -25,4 +31,6 @@ onboarding:
 
 runtime:
   environment: production
+  repository: your-org/your-repository
+  remediationPath: deploy/helm/incidentpilot/values.yaml
   lokiURL: https://loki.example.internal

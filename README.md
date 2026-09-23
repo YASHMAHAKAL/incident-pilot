@@ -225,6 +225,11 @@ Secrets, execute into pods, or modify workloads.
 Start from [the external values example](deploy/helm/incidentpilot/values-external.example.yaml)
 and follow [the external-cluster onboarding guide](docs/onboarding-external-cluster.md).
 
+The base [values.yaml](deploy/helm/incidentpilot/values.yaml) intentionally uses
+portable placeholders. For this repository's demo images and GitHub repository
+defaults, layer [values-demo.example.yaml](deploy/helm/incidentpilot/values-demo.example.yaml)
+on top. Neither file contains credentials.
+
 ## Project documentation
 
 The `docs/` directory is intentionally kept in this repository. The README is

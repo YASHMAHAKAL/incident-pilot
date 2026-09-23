@@ -1,0 +1,16 @@
+# Repository-specific demo overrides. These are not generic production defaults.
+# Pin immutable image digests before any non-demo deployment.
+api:
+  image: ghcr.io/yashmahakal/incidentpilot-api:latest
+
+mcp:
+  image: ghcr.io/yashmahakal/incidentpilot-mcp:latest
+
+runtime:
+  repository: YASHMAHAKAL/incident-pilot
+  remediationPath: deploy/helm/incidentpilot/values.yaml
+
+demo:
+  enabled: true
+  image: ghcr.io/yashmahakal/incidentpilot-demo:latest
+  trafficImage: ghcr.io/yashmahakal/incidentpilot-traffic:latest

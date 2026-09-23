@@ -1,14 +1,18 @@
+# This file is a portable chart baseline, not a deployment-ready environment.
+# Set image references to immutable digests and provide runtime.existingSecret
+# outside Git before installing. Repository-specific demo defaults are in
+# values-demo.example.yaml.
 imagePullPolicy: IfNotPresent
 
 api:
-  image: ghcr.io/yashmahakal/incidentpilot-api:latest
+  image: registry.example/incidentpilot-api:REPLACE_ME
   replicas: 2
   resources:
     requests: {cpu: 100m, memory: 128Mi}
     limits: {cpu: 500m, memory: 512Mi}
 
 mcp:
-  image: ghcr.io/yashmahakal/incidentpilot-mcp:latest
+  image: registry.example/incidentpilot-mcp:REPLACE_ME
   replicas: 2
   resources:
     requests: {cpu: 100m, memory: 128Mi}
@@ -18,7 +22,7 @@ runtime:
   existingSecret: incidentpilot-runtime
   githubSecret: ""
   environment: production
-  repository: YASHMAHAKAL/incident-pilot
+  repository: your-org/your-repository
   remediationPath: deploy/helm/incidentpilot/values.yaml
   otlpEndpoint: http://opentelemetry-collector.incidentpilot-observability.svc.cluster.local:4318
   prometheusURL: http://prometheus.incidentpilot-observability.svc.cluster.local:9090
@@ -43,8 +47,8 @@ onboarding:
 
 demo:
   enabled: true
-  image: ghcr.io/yashmahakal/incidentpilot-demo:latest
-  trafficImage: ghcr.io/yashmahakal/incidentpilot-traffic:latest
+  image: registry.example/incidentpilot-demo:REPLACE_ME
+  trafficImage: registry.example/incidentpilot-traffic:REPLACE_ME
   frontend:
     resources:
       requests: {cpu: 25m, memory: 32Mi}

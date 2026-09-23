@@ -19,7 +19,9 @@ metric expressions are specific to the demo, so external investigations omit
 them. The Loki endpoint is configurable through `runtime.lokiURL`; an
 unavailable source appears as a collection failure.
 
-Set `demo.enabled: false`, keep `runtime.environment: production`, and provide
+Replace the API/MCP image placeholders with immutable images you publish,
+provide your repository/path only if your reviewed policy will use remediation,
+set `demo.enabled: false`, keep `runtime.environment: production`, and provide
 the normal runtime Secret before deploying. Validate the chart with:
 
 ```sh
