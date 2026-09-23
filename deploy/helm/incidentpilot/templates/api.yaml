@@ -47,6 +47,7 @@ spec:
             - {name: INCIDENTPILOT_ENVIRONMENT, value: {{ .Values.runtime.environment | quote }}}
             - {name: INCIDENTPILOT_REPOSITORY, value: {{ .Values.runtime.repository | quote }}}
             - {name: INCIDENTPILOT_REMEDIATION_PATH, value: {{ .Values.runtime.remediationPath | quote }}}
+            - {name: INCIDENTPILOT_ONBOARDING_PROFILE, value: {{ .Values.onboarding | toJson | quote }}}
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.runtime.otlpEndpoint | quote }}}
           {{- if .Values.runtime.githubSecret }}
           envFrom:

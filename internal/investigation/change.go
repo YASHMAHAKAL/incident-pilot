@@ -25,6 +25,9 @@ var (
 func (b Backend) ValidateChangeSources() error {
 	argoSet := b.ArgoCD != "" || b.ArgoCDToken != "" || b.ArgoCDApplication != "" || b.ArgoCDProject != ""
 	githubSet := b.GitHub != "" || b.GitHubRepository != "" || b.GitHubToken != ""
+	if b.Profile.Effective().Mode == "external" && (argoSet || githubSet) {
+		return errors.New("change-source mapping is unavailable for external profiles")
+	}
 	if !argoSet && !githubSet {
 		return nil
 	}
@@ -64,7 +67,7 @@ func validRepository(repository string) bool {
 }
 
 func (b Backend) changeSourcesConfigured() bool {
-	return b.ValidateChangeSources() == nil && b.ArgoCD != ""
+	return b.Profile.Effective().Mode == "demo" && b.ValidateChangeSources() == nil && b.ArgoCD != ""
 }
 
 func (b Backend) argoApplication(ctx context.Context) (json.RawMessage, error) {

@@ -7,7 +7,93 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"incidentpilot/internal/onboarding"
 )
+
+func TestExternalProfileBoundsKubernetesReads(t *testing.T) {
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"checkout","container":"checkout","podLabelKey":"app.kubernetes.io/name","podLabelValue":"checkout"}],"alerts":[{"name":"CheckoutErrors","workload":"checkout"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		paths = append(paths, r.URL.String())
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{"items":[]}`)), Header: make(http.Header)}, nil
+	})}
+	b := Backend{Client: client, Kubernetes: "http://upstream", Profile: profile}
+	if _, err := b.Pods(context.Background(), "checkout"); err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || !strings.Contains(paths[0], "/namespaces/payments/pods") || !strings.Contains(paths[0], "labelSelector=app.kubernetes.io%2Fname%3Dcheckout") {
+		t.Fatalf("unexpected scoped request: %v", paths)
+	}
+	if _, err := b.Pods(context.Background(), "payments-api"); err == nil {
+		t.Fatal("demo workload accepted in external scope")
+	}
+	if _, err := b.OrdersConfig(context.Background()); err == nil {
+		t.Fatal("demo ConfigMap reader accepted in external scope")
+	}
+	if _, err := b.Metric(context.Background(), "checkout", "error_rate"); err == nil {
+		t.Fatal("demo metric accepted in external scope")
+	}
+	if len(paths) != 1 {
+		t.Fatalf("out-of-scope read reached Kubernetes: %v", paths)
+	}
+}
+
+func TestExternalDeploymentDoesNotProjectDemoDiagnostics(t *testing.T) {
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"orders-api","container":"orders-api","podLabelKey":"app","podLabelValue":"orders-api"}],"alerts":[{"name":"OrdersErrors","workload":"orders-api"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		body := `{"metadata":{"name":"orders-api"},"spec":{"template":{"spec":{"containers":[{"name":"orders-api","env":[{"name":"DEMO_ORDER_CPU_BURN_MS","value":"1000"}]}]}}}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	result, err := (Backend{Client: client, Kubernetes: "http://upstream", Profile: profile}).Deployment(context.Background(), "orders-api")
+	if err != nil || strings.Contains(string(result), "diagnosticRuntimeConfig") || strings.Contains(string(result), "DEMO_ORDER_CPU_BURN_MS") {
+		t.Fatalf("demo diagnostics leaked into external profile: %s err=%v", result, err)
+	}
+}
+
+func TestExternalLogsRequirePodSelectorAndNamespace(t *testing.T) {
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"checkout","container":"checkout","podLabelKey":"app.kubernetes.io/name","podLabelValue":"checkout"}],"alerts":[{"name":"CheckoutErrors","workload":"checkout"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var requests []string
+	podLabel := "other"
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests = append(requests, r.URL.String())
+		body := `{"metadata":{"labels":{"app.kubernetes.io/name":"` + podLabel + `"}}}`
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			body = "log line"
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})}
+	b := Backend{Client: client, Kubernetes: "http://upstream", Loki: "http://upstream", Profile: profile}
+	if _, err := b.Logs(context.Background(), "checkout", "checkout-abc", 20); err == nil {
+		t.Fatal("logs exposed for a pod outside the configured selector")
+	}
+	if len(requests) != 1 || !strings.Contains(requests[0], "/namespaces/payments/pods/checkout-abc") {
+		t.Fatalf("unexpected pod reads: %v", requests)
+	}
+	podLabel = "checkout"
+	if text, err := b.Logs(context.Background(), "checkout", "checkout-abc", 20); err != nil || text != "log line" {
+		t.Fatalf("selected pod logs unavailable: %q err=%v", text, err)
+	}
+	now := time.Now().UTC()
+	if _, err := b.LogWindow(context.Background(), "checkout", now.Add(-time.Minute), now, 20); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 4 || !strings.Contains(requests[3], "k8s_namespace_name%3D%22payments%22") {
+		t.Fatalf("Loki query lost namespace scope: %v", requests)
+	}
+	if _, err := b.SearchTracesWindow(context.Background(), "checkout", now.Add(-time.Minute), now); err == nil {
+		t.Fatal("external trace search accepted")
+	}
+}
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 

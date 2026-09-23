@@ -1,43 +1,257 @@
 # IncidentPilot
 
-IncidentPilot is an evidence-driven Kubernetes incident investigator. The [project roadmap](.agents/skills/incidentpilot/references/roadmap.md) defines the staged build. This repository implements the complete v1 roadmap through [Phase 14 AWS/GitOps deployment assets](docs/phase-14-aws.md), including the [Phase 13 reproducible safety/RCA evaluation](docs/phase-13-evaluation.md). Automatic investigation orchestration remains future work.
+IncidentPilot is an evidence-driven Kubernetes incident investigation platform.
+It turns conventional alerts into bounded, evidence-backed root-cause analysis
+(RCA), then sends only policy-approved remediation proposals through a GitOps
+pull-request workflow.
 
-## Local workflow
+It is deliberately **not** an unrestricted Kubernetes chatbot: the LLM can
+reason about collected evidence, but it cannot execute shell commands, read
+Secrets, run `kubectl`, change a cluster, bypass OPA, or create a PR directly.
 
-Requirements: Go 1.27 or newer, Make, and Docker for container builds. The Kubernetes demo also needs [kind](https://kind.sigs.k8s.io/docs/user/quick-start/) and kubectl. The `kind` executable must be on `PATH` (or passed as `KIND=/path/to/kind`).
+## Why this project exists
 
-The Go module currently uses the local path `incidentpilot`. Replace it with the eventual repository import path when a Git remote is chosen.
+Kubernetes alerts often identify a symptom rather than the cause. An increase
+in checkout failures, for example, could originate in the frontend, a failing
+downstream service, a bad image, a Service selector, or an under-sized memory
+limit. IncidentPilot provides a constrained path from alert to reviewable
+action:
+
+1. Alertmanager sends a conventional alert to the API.
+2. A one-shot investigator gathers small, scoped observations through MCP.
+3. Deterministic verification accepts an RCA only when its evidence matches a
+   supported cause; otherwise it records `INSUFFICIENT_EVIDENCE`.
+4. A structured remediation proposal is validated by trusted code and OPA.
+5. An allowed change can become one narrow GitHub pull request for human review.
+
+Kubernetes is never changed directly by the investigator or remediation path.
+
+## Architecture
+
+```mermaid
+flowchart TD
+    App[Instrumented Kubernetes workloads]
+    OTel[OpenTelemetry Collector]
+    Prom[Prometheus]
+    Loki[Loki]
+    Tempo[Tempo]
+    AM[Alertmanager]
+    API[incidentpilot-api]
+    DB[(PostgreSQL)]
+    Agent[incidentpilot-agent<br/>operator-triggered, one-shot]
+    MCP[incidentpilot-mcp<br/>constrained read-only tools]
+    K8s[Kubernetes read APIs]
+    Argo[Argo CD and GitHub read APIs]
+    LLM[Provider adapter<br/>Groq or Ollama]
+    OPA[OPA / Rego]
+    GitHub[GitHub pull request]
+    GitOps[Human review → merge → Argo CD]
+
+    App -->|OTLP metrics, traces, logs| OTel
+    OTel --> Prom
+    OTel --> Loki
+    OTel --> Tempo
+    Prom --> AM --> API
+    API <--> DB
+    Agent -->|load incident and save report| DB
+    Agent -->|bounded evidence calls| MCP
+    Agent -->|structured analysis| LLM
+    MCP --> K8s
+    MCP --> Prom
+    MCP --> Loki
+    MCP --> Tempo
+    MCP --> Argo
+    MCP -->|single request_remediation boundary| API
+    API -->|trusted validation and risk derivation| OPA
+    OPA -->|allowed only| GitHub --> GitOps
+```
+
+The critical boundary is between reasoning and authorization. Evidence, policy
+input, patch generation, and GitHub execution are controlled by deterministic
+code—not by the model.
+
+## What is implemented
+
+- Alert ingestion, deduplication, lifecycle persistence, and trace context.
+- Bounded MCP reads for Kubernetes, Prometheus, Loki, Tempo, Argo CD, and
+  GitHub change intelligence.
+- Provider-agnostic LLM adapters for Groq and Ollama.
+- Evidence persistence with provenance, source, resource reference, collection
+  window, and normalized summary.
+- Deterministic RCA verification for six reproducible demo faults:
+  OOMKilled, image pull failure, invalid configuration, broken Service routing,
+  CPU/latency regression, and downstream payment failure.
+- OPA-governed remediation: the demo OOM repair can change only the exact
+  memory-limit scalar through a reviewable GitHub PR. It never merges a PR.
+- OpenTelemetry traces and metrics for alerts, investigations, LLM/MCP calls,
+  policy decisions, and remediation outcomes.
+- Helm-based external onboarding for a single existing namespace, with
+  validated workload, pod-selector, alert, and read-only evidence scope.
+
+The demo is a reproducible test fixture, not the product's only use case. An
+external profile can investigate configured workloads, but its current generic
+RCA support is intentionally narrower: Kubernetes OOM and image-pull evidence
+can be verified; unsupported causes stop safely with `INSUFFICIENT_EVIDENCE`.
+
+## Technology stack
+
+| Area | Technology |
+| --- | --- |
+| Services | Go |
+| Local Kubernetes | kind and kubectl |
+| Telemetry | OpenTelemetry Collector, Prometheus, Loki, Tempo, Grafana |
+| Alerting and storage | Alertmanager, PostgreSQL |
+| Investigation boundary | Model Context Protocol (MCP) Go SDK |
+| AI providers | Groq or Ollama through project-owned adapters |
+| Authorization | OPA / Rego |
+| Delivery | Helm, Argo CD, GitHub pull requests |
+| Cloud assets | Terraform for optional AWS/EKS deployment |
+
+## Quick start: test locally
+
+### Prerequisites
+
+- Go 1.27 or newer
+- Docker
+- Make
+- kubectl
+- [kind](https://kind.sigs.k8s.io/docs/user/quick-start/)
+
+Run the deterministic repository checks first:
 
 ```sh
 make check
 make eval
-make run
+make infra-check
 ```
 
-The API listens on `:8080` by default. `GET /healthz` returns `ok`; it only reports that the process can serve HTTP. Override the bind address with `INCIDENTPILOT_HTTP_ADDR` (for example, `127.0.0.1:8080`). Set `INCIDENTPILOT_SHUTDOWN_TIMEOUT` to a positive Go duration such as `15s`; the default is `10s`. Running without a database and webhook token leaves only liveness enabled; see the [Phase 3 guide](docs/phase-3-incidents.md) for the incident path.
-
-Build the local images with `make container-build`. They run as non-root users and contain only statically linked binaries.
-
-## Observable demo
-
-The demo graph is `frontend -> orders-api -> payments-api`. Run `make kind-up` to create a dedicated `incidentpilot` kind cluster, build and load the demo images, and apply the manifests. All Kubernetes commands in the Makefile target the `kind-incidentpilot` context explicitly. `make kind-status` lists the pods. The traffic generator calls `/checkout` every two seconds.
-
-Re-running `make kind-up` reloads local images and restarts the demo, API, MCP, Alertmanager, and observability pods. Prometheus, Loki, Tempo, and Alertmanager keep ephemeral local data, so restarts clear their data. PostgreSQL uses a PVC and retains incidents across pod restarts. To remove this dedicated cluster and its data when you are finished, run `make kind-down`.
-
-Open Grafana locally with:
+Start the fully local demo stack:
 
 ```sh
-kubectl --context kind-incidentpilot -n incidentpilot-observability port-forward svc/grafana 3000:3000
+make kind-up
+make kind-status
 ```
 
-Visit `http://localhost:3000` and use Explore. Query `demo_requests_total` in Prometheus, `{service_name="frontend"}` in Loki, and search `service.name=frontend` in Tempo. A checkout trace includes frontend, orders-api, and payments-api spans. You can also port-forward `svc/frontend` in `incidentpilot-demo` on port 8080 and open `/checkout` yourself. The observability stores use ephemeral local filesystem data, and Grafana allows anonymous viewing inside the local cluster; this deployment is for development only.
+This creates or refreshes only the `kind-incidentpilot` cluster. It includes the
+demo app, traffic generator, observability components, Alertmanager,
+IncidentPilot API/MCP services, and PostgreSQL. No AWS resources are created.
 
-Grafana also provisions an **IncidentPilot control plane** dashboard for alert, investigation, LLM, MCP, policy, and remediation metrics. Incident and investigation API responses include a trace ID when telemetry is enabled; use it to locate the corresponding control-plane trace in Tempo.
+To remove all local cluster data later:
 
-The telemetry route is: app OTLP HTTP -> Collector -> Prometheus exporter or Tempo; Kubernetes container logs -> Collector filelog receiver -> Loki OTLP endpoint. Collector configuration follows the [container log parser](https://github.com/open-telemetry/opentelemetry-collector-contrib/blob/main/pkg/stanza/docs/operators/container.md) and [Loki OTLP ingestion](https://grafana.com/docs/loki/latest/send-data/otel/otel-collector-getting-started/) guidance.
+```sh
+make kind-down
+```
 
-## Current scope
+### Run an end-to-end incident investigation
 
-The API receives Alertmanager webhooks, deduplicates incidents, and persists them in PostgreSQL; see the [Phase 3 guide](docs/phase-3-incidents.md). The separate MCP service can query bounded Kubernetes and observability data; see the [Phase 4 guide](docs/phase-4-mcp.md). Phase 5 can deterministically collect, normalize, and persist evidence for a recent demo incident; see the [evidence guide](docs/phase-5-evidence.md). Phase 6 provides interchangeable Groq and Ollama adapters; see the [provider guide](docs/phase-6-llm.md). Phase 7 adds a one-shot investigator that performs bounded deterministic evidence traversal followed by one structured LLM analysis call and persists the verified report; see the [investigator guide](docs/phase-7-investigator.md). Phase 8 can correlate an incident window with an Argo CD deployment and the corresponding bounded GitHub commit/diff when those optional sources are configured. Phase 9 verifies evidence-backed RCAs for all six v1 fixtures: [OOMKilled](scenarios/oom-memory-limit/README.md), [ImagePullBackOff](scenarios/bad-image/README.md), [invalid ConfigMap](scenarios/invalid-configmap/README.md), [broken Service selector](scenarios/broken-service-selector/README.md), [CPU/latency regression](scenarios/cpu-latency/README.md), and [downstream failure](scenarios/downstream-failure/README.md). Phase 10 accepts one evidence-linked remediation proposal, derives risk in trusted code, and applies embedded OPA/Rego policy. Phase 11 keeps execution inside that same boundary: an allowed OOM repair can generate one exact manifest edit, commit it to a deterministic branch, open or reuse a reviewable GitHub PR, and durably audit the result. It cannot merge PRs or mutate Kubernetes. Automatic alert-to-agent orchestration is not implemented. The demo uses a simulated payment response and does not persist orders.
+Create `.env` from `.env.example` if it does not already exist. To use model
+analysis, add your own Groq or Ollama configuration; never commit provider keys.
 
-The AWS deployment is infrastructure-as-code only until an operator explicitly supplies credentials, reviews cost, publishes immutable images, runs Terraform, supplies runtime secrets, and bootstraps Argo CD. See the [Phase 14 runbook](docs/phase-14-aws.md). Repository automation never runs `terraform apply` or merges remediation PRs.
+In three terminals, create local-only forwards:
+
+```sh
+kubectl --context kind-incidentpilot -n incidentpilot-system port-forward svc/postgres 15432:5432
+```
+
+```sh
+kubectl --context kind-incidentpilot -n incidentpilot-system port-forward svc/incidentpilot-mcp 18081:8081
+```
+
+```sh
+kubectl --context kind-incidentpilot -n incidentpilot-system port-forward svc/incidentpilot-api 18080:8080
+```
+
+Inject and verify the safe local OOM fixture:
+
+```sh
+make scenario-oom-inject
+make scenario-oom-check
+```
+
+After Alertmanager delivers the alert, get the newest incident ID:
+
+```sh
+curl -H 'Authorization: Bearer incidentpilot-local-dev-token-v1' \
+  'http://127.0.0.1:18080/api/v1/incidents?limit=10'
+```
+
+Run the investigator with that ID:
+
+```sh
+set -a
+source .env
+set +a
+
+./bin/incidentpilot-agent -incident-id INCIDENT_UUID
+```
+
+Expected result: `ROOT_CAUSE_FOUND` with cause `memory_limit_oom` and cited
+pod/Deployment evidence. Always restore the fixture afterward:
+
+```sh
+make scenario-oom-reset
+```
+
+Run every reproducible fault scenario, including reset, with:
+
+```sh
+make eval-kind
+```
+
+See [the local testing guide](docs/phase-7-investigator.md) for the complete
+agent workflow and [scenario documentation](scenarios/oom-memory-limit/README.md)
+for each fault's expected evidence.
+
+## Remediation and PR testing
+
+The remediation path accepts a structured proposal only after a verified RCA.
+For the local OOM scenario, OPA permits exactly the `48Mi` to `128Mi` memory
+limit repair in `deploy/kind/30-demo.yaml`; broader changes are denied.
+
+A real PR additionally requires a GitHub fine-grained token restricted to this
+repository with Contents and Pull requests read/write, configured as the local
+`incidentpilot-github-remediation` Secret. Without it, the expected safe result
+is `PR_FAILED/github_not_configured`. Details and the exact proposal schema are
+in the [GitHub remediation guide](docs/phase-11-github-remediation.md).
+
+## Use with an existing cluster
+
+Do not copy the demo application into another cluster. Install the chart with an
+external onboarding profile that declares the application namespace, workloads,
+container names, pod selectors, and allowed alerts. IncidentPilot creates only
+its own read-only RBAC binding in that application namespace; it does not read
+Secrets, execute into pods, or modify workloads.
+
+Start from [the external values example](deploy/helm/incidentpilot/values-external.example.yaml)
+and follow [the external-cluster onboarding guide](docs/onboarding-external-cluster.md).
+
+## Project documentation
+
+The `docs/` directory is intentionally kept in this repository. The README is
+the entry point; the documents below preserve design decisions, security
+boundaries, reproducible procedures, and deployment details without turning the
+README into an unmaintainable manual.
+
+- [Incident ingestion](docs/phase-3-incidents.md)
+- [MCP security boundary](docs/phase-4-mcp.md)
+- [Evidence model](docs/phase-5-evidence.md)
+- [LLM providers](docs/phase-6-llm.md)
+- [Investigator](docs/phase-7-investigator.md)
+- [Change intelligence](docs/phase-8-change-intelligence.md)
+- [RCA verification](docs/phase-9-rca.md)
+- [OPA remediation](docs/phase-10-remediation.md)
+- [GitHub PR remediation](docs/phase-11-github-remediation.md)
+- [Observability](docs/phase-12-observability.md)
+- [Evaluation](docs/phase-13-evaluation.md)
+- [AWS/EKS and GitOps deployment assets](docs/phase-14-aws.md)
+
+## Current limits
+
+- The agent is intentionally one-shot; alert-to-agent orchestration is not yet
+  automated.
+- Live GitHub PR creation requires an explicitly configured write credential and
+  human review; IncidentPilot never merges it.
+- The kind environment uses public disposable local credentials and ephemeral
+  observability storage. It is for development only.
+- Terraform and Helm assets support AWS/EKS deployment, but deployment is an
+  operator-controlled action and this repository never runs `terraform apply`.

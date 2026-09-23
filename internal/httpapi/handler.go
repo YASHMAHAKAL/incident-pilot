@@ -22,6 +22,7 @@ import (
 
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/onboarding"
 	"incidentpilot/internal/remediation"
 	"incidentpilot/internal/telemetry"
 )
@@ -61,6 +62,10 @@ type Remediator interface {
 }
 
 func HandlerWithServices(store incident.Store, evidenceStore evidence.Store, collector *evidence.Collector, remediator Remediator, webhookToken, remediationToken string, logger *slog.Logger) http.Handler {
+	return HandlerWithProfile(store, evidenceStore, collector, remediator, webhookToken, remediationToken, onboarding.Demo(), logger)
+}
+
+func HandlerWithProfile(store incident.Store, evidenceStore evidence.Store, collector *evidence.Collector, remediator Remediator, webhookToken, remediationToken string, profile onboarding.Profile, logger *slog.Logger) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -99,6 +104,14 @@ func HandlerWithServices(store incident.Store, evidenceStore evidence.Store, col
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if profile.Effective().Mode == "external" {
+			for _, signal := range signals {
+				if !profile.AllowsIncident(signal.Namespace, signal.Service, signal.AlertName) {
+					http.Error(w, "alert is outside the configured onboarding profile", http.StatusBadRequest)
+					return
+				}
+			}
 		}
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()

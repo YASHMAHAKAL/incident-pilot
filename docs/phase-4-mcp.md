@@ -8,6 +8,8 @@ Phase 10 adds a seventeenth tool, `request_remediation`. It proxies a structured
 
 The MCP ServiceAccount has a RoleBinding only in `incidentpilot-demo`: GET deployments/services, GET/LIST EndpointSlices, GET/LIST pods, pod logs, and events, plus GET on the single named `orders-config` ConfigMap. It has no permission to read Secrets, use pod exec, or mutate workloads. This is an independent enforcement layer in addition to tool validation. Calls emit OTel spans, a bounded-label `incidentpilot_tool_calls_total` counter, and structured audit logs with tool/status/duration (not payloads).
 
+With an [external onboarding profile](onboarding-external-cluster.md), the RoleBinding moves to one configured namespace and the ConfigMap grant is omitted. Kubernetes workload names and pod selectors come from the validated profile. Demo metrics, ConfigMap reads, trace reads, change-source reads, and remediation remain unavailable in that mode; Loki uses both service and namespace labels.
+
 To connect a client locally:
 
 ```sh

@@ -9,7 +9,43 @@ import (
 	"time"
 
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/onboarding"
 )
+
+func TestExternalCollectionPersistsOnlyScopedGenericEvidence(t *testing.T) {
+	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"checkout","container":"checkout","podLabelKey":"app","podLabelValue":"checkout"}],"alerts":[{"name":"CheckoutErrors","workload":"checkout"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caller := &fakeCaller{results: map[string]ToolObservation{
+		"kubernetes_get_deployment":     observation("kubernetes/deployment", `{"spec":{}}`, now),
+		"kubernetes_get_service":        observation("kubernetes/service", `{"spec":{}}`, now),
+		"kubernetes_get_endpointslices": observation("kubernetes/endpointslices", `{"items":[]}`, now),
+		"kubernetes_get_pods":           observation("kubernetes/pods", `{"items":[]}`, now),
+		"kubernetes_get_events":         observation("kubernetes/events", `{"items":[]}`, now),
+		"loki_get_demo_logs":            observation("loki", `{"result":[]}`, now),
+	}}
+	store := &fakeEvidenceStore{}
+	collector := Collector{Caller: caller, Store: store, Profile: profile, Now: func() time.Time { return now }}
+	inc := incident.Incident{ID: "00000000-0000-0000-0000-000000000001", Namespace: "payments", Service: "checkout", AlertName: "CheckoutErrors", StartedAt: now.Add(-time.Minute)}
+	report, err := collector.Collect(context.Background(), inc)
+	if err != nil || len(report.Evidence) != 6 || len(store.saved) != 6 {
+		t.Fatalf("unexpected external evidence: %+v err=%v", report, err)
+	}
+	for _, record := range store.saved {
+		if record.ResourceRef != "payments/checkout" {
+			t.Fatalf("wrong evidence reference: %s", record.ResourceRef)
+		}
+		if strings.Contains(record.Tool, "prometheus") || strings.Contains(record.Tool, "orders_config") || strings.HasPrefix(record.Tool, "argocd_") || strings.HasPrefix(record.Tool, "tempo_") {
+			t.Fatalf("demo-only tool used: %s", record.Tool)
+		}
+	}
+	inc.Namespace = "default"
+	if _, err := collector.Collect(context.Background(), inc); !errors.Is(err, ErrUnsupportedIncident) {
+		t.Fatalf("out-of-scope incident accepted: %v", err)
+	}
+}
 
 type fakeCaller struct {
 	calls   []string
@@ -225,9 +261,19 @@ func TestOrdersCollectionReadsAllowlistedConfigAndObservedCrashLoopLogs(t *testi
 }
 
 func TestCrashLoopPodAcceptsRestartingErrorBetweenBackoffStates(t *testing.T) {
-	pod := crashLoopPod(json.RawMessage(`{"items":[{"metadata":{"name":"orders-api-7f6d8c9b5-x2abc"},"status":{"containerStatuses":[{"name":"orders-api","restartCount":2,"state":{"terminated":{"reason":"Error"}}}]}}]}`), "orders-api")
+	pod := crashLoopPod(json.RawMessage(`{"items":[{"metadata":{"name":"orders-api-7f6d8c9b5-x2abc"},"status":{"containerStatuses":[{"name":"orders-api","restartCount":2,"state":{"terminated":{"reason":"Error"}}}]}}]}`), "orders-api", "orders-api")
 	if pod != "orders-api-7f6d8c9b5-x2abc" {
 		t.Fatalf("terminated restart state was not recognized: %q", pod)
+	}
+}
+
+func TestCrashLoopPodUsesConfiguredContainer(t *testing.T) {
+	payload := json.RawMessage(`{"items":[{"metadata":{"name":"checkout-abc"},"status":{"containerStatuses":[{"name":"web","state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}]}`)
+	if got := crashLoopPod(payload, "checkout", "web"); got != "checkout-abc" {
+		t.Fatalf("configured container crash loop not selected: %q", got)
+	}
+	if got := crashLoopPod(payload, "checkout", "sidecar"); got != "" {
+		t.Fatalf("unconfigured container selected: %q", got)
 	}
 }
 

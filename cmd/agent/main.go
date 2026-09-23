@@ -15,6 +15,7 @@ import (
 	"incidentpilot/internal/agent"
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/llm"
+	"incidentpilot/internal/onboarding"
 	"incidentpilot/internal/storage"
 	"incidentpilot/internal/telemetry"
 )
@@ -66,20 +67,27 @@ func run(ctx context.Context, incidentID, reportID string, logger *slog.Logger) 
 		defer readCancel()
 		result, err = postgres.GetInvestigation(readCtx, reportID)
 	} else {
+		profile, profileErr := onboarding.Parse(os.Getenv("INCIDENTPILOT_ONBOARDING_PROFILE"))
+		if profileErr != nil {
+			return profileErr
+		}
 		endpoint, token := os.Getenv("INCIDENTPILOT_MCP_ENDPOINT"), os.Getenv("INCIDENTPILOT_MCP_TOKEN")
 		caller, callerErr := evidence.NewMCPClient(endpoint, token)
 		if callerErr != nil {
 			return fmt.Errorf("configure MCP: %w", callerErr)
 		}
-		cfg, cfgErr := llm.LoadConfig()
-		if cfgErr != nil {
-			return cfgErr
+		var provider llm.Provider
+		if profile.Mode == "demo" {
+			cfg, cfgErr := llm.LoadConfig()
+			if cfgErr != nil {
+				return cfgErr
+			}
+			provider, err = llm.NewProvider(cfg)
+			if err != nil {
+				return err
+			}
 		}
-		provider, providerErr := llm.NewProvider(cfg)
-		if providerErr != nil {
-			return providerErr
-		}
-		investigator := agent.Investigator{Incidents: postgres, Collector: evidence.Collector{Caller: caller, Store: postgres}, Provider: provider, Reports: postgres}
+		investigator := agent.Investigator{Incidents: postgres, Collector: evidence.Collector{Caller: caller, Store: postgres, Profile: profile}, Provider: provider, Reports: postgres, Profile: profile}
 		result, err = investigator.Run(ctx, incidentID)
 	}
 	if err != nil {

@@ -1,3 +1,4 @@
+{{- if eq .Values.onboarding.mode "demo" }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -36,3 +37,4 @@ spec:
             service: orders-api
           annotations:
             summary: orders-api cannot pull its configured image
+{{- end }}

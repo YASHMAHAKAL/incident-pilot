@@ -1,3 +1,4 @@
+{{- if eq .Values.onboarding.mode "demo" }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -5,6 +6,7 @@ metadata:
   labels:
     {{- include "incidentpilot.labels" . | nindent 4 }}
 ---
+{{- end }}
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -25,15 +27,20 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
   name: incidentpilot-reader
-  namespace: {{ .Values.demoNamespace }}
+  namespace: {{ ternary .Values.demoNamespace .Values.onboarding.namespace (eq .Values.onboarding.mode "demo") }}
 rules:
   - apiGroups: [""]
-    resources: [pods, pods/log, events, services]
+    resources: [pods, events]
     verbs: [get, list]
+  - apiGroups: [""]
+    resources: [pods/log, services]
+    verbs: [get]
+  {{- if eq .Values.onboarding.mode "demo" }}
   - apiGroups: [""]
     resources: [configmaps]
     resourceNames: [orders-config]
     verbs: [get]
+  {{- end }}
   - apiGroups: [apps]
     resources: [deployments]
     verbs: [get]
@@ -45,7 +52,7 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
   name: incidentpilot-mcp-reader
-  namespace: {{ .Values.demoNamespace }}
+  namespace: {{ ternary .Values.demoNamespace .Values.onboarding.namespace (eq .Values.onboarding.mode "demo") }}
 subjects:
   - kind: ServiceAccount
     name: incidentpilot-mcp

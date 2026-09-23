@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"incidentpilot/internal/investigation"
+	"incidentpilot/internal/onboarding"
 	"incidentpilot/internal/telemetry"
 )
 
@@ -55,12 +56,21 @@ func main() {
 	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
 	client := &http.Client{Transport: otelhttp.NewTransport(transport), Timeout: 9 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("redirects disabled") }}
 	githubAPI := os.Getenv("INCIDENTPILOT_GITHUB_API_URL")
+	profile, err := onboarding.Parse(os.Getenv("INCIDENTPILOT_ONBOARDING_PROFILE"))
+	if err != nil {
+		logger.Error("onboarding config", "error", err)
+		return
+	}
 	if githubAPI == "" && os.Getenv("INCIDENTPILOT_GITHUB_REPOSITORY") != "" {
 		githubAPI = "https://api.github.com"
 	}
 	backend := investigation.Backend{
-		Client: client, Kubernetes: "https://kubernetes.default.svc", Prometheus: "http://prometheus.incidentpilot-observability.svc.cluster.local:9090", Loki: "http://loki.incidentpilot-observability.svc.cluster.local:3100", Tempo: "http://tempo.incidentpilot-observability.svc.cluster.local:3200", Token: string(kubeToken),
-		ArgoCD: os.Getenv("INCIDENTPILOT_ARGOCD_URL"), ArgoCDToken: os.Getenv("INCIDENTPILOT_ARGOCD_TOKEN"), ArgoCDApplication: os.Getenv("INCIDENTPILOT_ARGOCD_APPLICATION"), ArgoCDProject: os.Getenv("INCIDENTPILOT_ARGOCD_PROJECT"),
+		Profile: profile,
+		Client:  client, Kubernetes: "https://kubernetes.default.svc", Token: string(kubeToken),
+		Prometheus: sourceURL("INCIDENTPILOT_PROMETHEUS_URL", "http://prometheus.incidentpilot-observability.svc.cluster.local:9090"),
+		Loki:       sourceURL("INCIDENTPILOT_LOKI_URL", "http://loki.incidentpilot-observability.svc.cluster.local:3100"),
+		Tempo:      sourceURL("INCIDENTPILOT_TEMPO_URL", "http://tempo.incidentpilot-observability.svc.cluster.local:3200"),
+		ArgoCD:     os.Getenv("INCIDENTPILOT_ARGOCD_URL"), ArgoCDToken: os.Getenv("INCIDENTPILOT_ARGOCD_TOKEN"), ArgoCDApplication: os.Getenv("INCIDENTPILOT_ARGOCD_APPLICATION"), ArgoCDProject: os.Getenv("INCIDENTPILOT_ARGOCD_PROJECT"),
 		GitHub: githubAPI, GitHubToken: os.Getenv("INCIDENTPILOT_GITHUB_TOKEN"), GitHubRepository: os.Getenv("INCIDENTPILOT_GITHUB_REPOSITORY"),
 	}
 	if err := backend.ValidateChangeSources(); err != nil {
@@ -73,7 +83,7 @@ func main() {
 		return
 	}
 	var remediationClient investigation.RemediationRequester
-	if remediationEndpoint != "" {
+	if remediationEndpoint != "" && profile.Mode == "demo" {
 		remediationHTTP := &http.Client{Transport: client.Transport, Timeout: 50 * time.Second, CheckRedirect: client.CheckRedirect}
 		remediationClient, err = investigation.NewRemediationClient(remediationHTTP, remediationEndpoint, remediationToken)
 		if err != nil {
@@ -106,4 +116,11 @@ func main() {
 	if err := httpServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("MCP server", "error", err)
 	}
+}
+
+func sourceURL(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }

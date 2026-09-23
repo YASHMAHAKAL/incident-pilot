@@ -147,7 +147,7 @@ func (s *Server) Handler() http.Handler {
 	server := mcp.NewServer(&mcp.Implementation{Name: "incidentpilot-mcp", Version: "0.1.0"}, nil)
 	readonly := &mcp.ToolAnnotations{ReadOnlyHint: true}
 	nondestructive := false
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_deployment", Description: "Read an allowlisted demo Deployment in incidentpilot-demo.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_deployment", Description: "Read an allowlisted Deployment in the configured namespace.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_deployment", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Deployment(ctx, in.Workload)
 			return Result{Source: "kubernetes/deployment", CollectedAt: time.Now().UTC(), Data: data}, err
@@ -159,31 +159,31 @@ func (s *Server) Handler() http.Handler {
 			return Result{Source: "kubernetes/configmap", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_service", Description: "Read an allowlisted demo Service and its selector.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_service", Description: "Read an allowlisted Service and its selector.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_service", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Service(ctx, in.Workload)
 			return Result{Source: "kubernetes/service", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_endpointslices", Description: "Read up to 20 EndpointSlices selected by one allowlisted demo Service.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_endpointslices", Description: "Read up to 20 EndpointSlices selected by one allowlisted Service.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_endpointslices", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.EndpointSlices(ctx, in.Workload)
 			return Result{Source: "kubernetes/endpointslices", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_pods", Description: "Read status of up to 20 demo workload pods.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_pods", Description: "Read status of up to 20 pods selected for an allowlisted workload.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_pods", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Pods(ctx, in.Workload)
 			return Result{Source: "kubernetes/pods", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_events", Description: "Read bounded recent events in the demo namespace.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_events", Description: "Read bounded recent workload events in the configured namespace.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in WorkloadInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_events", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Events(ctx, in.Workload)
 			return Result{Source: "kubernetes/events", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_pod_logs", Description: "Read at most 100 lines and 64 KiB from one demo pod.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in LogsInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "kubernetes_get_pod_logs", Description: "Read at most 100 lines and 64 KiB from one scoped pod.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in LogsInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "kubernetes_get_pod_logs", func(ctx context.Context) (Result, error) {
 			data, err := s.backend.Logs(ctx, in.Workload, in.Pod, in.Lines)
 			return Result{Source: "kubernetes/pod_logs", CollectedAt: time.Now().UTC(), Text: data}, err
@@ -205,7 +205,7 @@ func (s *Server) Handler() http.Handler {
 			return Result{Source: "prometheus/range", CollectedAt: time.Now().UTC(), Data: data}, err
 		})
 	})
-	mcp.AddTool(server, &mcp.Tool{Name: "loki_get_demo_logs", Description: "Read up to 100 log entries from a demo service over at most 60 minutes.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in LokiInput) (*mcp.CallToolResult, Result, error) {
+	mcp.AddTool(server, &mcp.Tool{Name: "loki_get_demo_logs", Description: "Read up to 100 scoped service log entries over at most 60 minutes.", Annotations: readonly}, func(ctx context.Context, _ *mcp.CallToolRequest, in LokiInput) (*mcp.CallToolResult, Result, error) {
 		return s.instrument(ctx, "loki_get_demo_logs", func(ctx context.Context) (Result, error) {
 			var data json.RawMessage
 			var err error

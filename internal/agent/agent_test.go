@@ -16,7 +16,26 @@ import (
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
 	"incidentpilot/internal/llm"
+	"incidentpilot/internal/onboarding"
 )
+
+func TestExternalInvestigationPersistsEvidenceWithoutUnsupportedRCA(t *testing.T) {
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"checkout","container":"checkout","podLabelKey":"app","podLabelValue":"checkout"}],"alerts":[{"name":"CheckoutErrors","workload":"checkout"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 20, 10, 0, 0, 0, time.UTC)
+	collector := &testCollector{initial: evidence.Report{Evidence: []evidence.Record{{ID: podEvidenceID, ResourceRef: "payments/checkout", Tool: "kubernetes_get_pods", Source: "kubernetes/pods", Payload: json.RawMessage(`{"items":[]}`)}}}}
+	reports := &testReports{}
+	a := Investigator{Incidents: testIncidents{inc: incident.Incident{ID: testIncidentID, Namespace: "payments", Service: "checkout", AlertName: "CheckoutErrors"}}, Collector: collector, Reports: reports, Profile: profile, Now: func() time.Time { return now }}
+	report, err := a.Run(context.Background(), testIncidentID)
+	if err != nil || report.Status != StatusInsufficientEvidence || report.RootCause != nil || report.LLMCalls != 0 || report.ToolCalls != 1 || reports.saved.ID != report.ID {
+		t.Fatalf("unexpected external investigation: %+v err=%v", report, err)
+	}
+	if collector.calls != 1 {
+		t.Fatalf("unexpected collection count: %d", collector.calls)
+	}
+}
 
 const testIncidentID = "00000000-0000-0000-0000-000000000001"
 const podEvidenceID = "00000000-0000-0000-0000-000000000002"

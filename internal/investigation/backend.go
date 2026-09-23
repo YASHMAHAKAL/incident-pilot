@@ -11,10 +11,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"incidentpilot/internal/onboarding"
 )
 
 // Backend contains only fixed, read-only upstreams. No tool accepts an URL or query language.
 type Backend struct {
+	Profile                             onboarding.Profile
 	Client                              *http.Client
 	Kubernetes, Prometheus, Loki, Tempo string
 	Token                               string
@@ -77,23 +80,23 @@ func (b Backend) getJSON(ctx context.Context, base, path string, query url.Value
 	return body, nil
 }
 
-const namespace = "incidentpilot-demo"
-
-func workload(name string) bool {
-	return name == "frontend" || name == "orders-api" || name == "payments-api"
-}
+func (b Backend) workload(name string) bool { return b.Profile.AllowsWorkload(name) }
+func (b Backend) namespace() string         { return b.Profile.Effective().Namespace }
 
 func (b Backend) Deployment(ctx context.Context, name string) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
-	raw, err := b.get(ctx, b.Kubernetes, "/apis/apps/v1/namespaces/"+namespace+"/deployments/"+name, nil, true, 256<<10)
+	raw, err := b.get(ctx, b.Kubernetes, "/apis/apps/v1/namespaces/"+b.namespace()+"/deployments/"+name, nil, true, 256<<10)
 	if err != nil {
 		return nil, err
 	}
 	clean, err := sanitizeKubernetes(raw, nil)
 	if err != nil {
 		return clean, err
+	}
+	if b.Profile.Effective().Mode == "external" {
+		return clean, nil
 	}
 	return addDiagnosticDeploymentConfig(clean, raw, name)
 }
@@ -151,7 +154,10 @@ func addDiagnosticDeploymentConfig(clean, raw json.RawMessage, workloadName stri
 // OrdersConfig returns one explicitly accepted, non-secret diagnostic key. It
 // is intentionally not a generic ConfigMap reader.
 func (b Backend) OrdersConfig(ctx context.Context) (json.RawMessage, error) {
-	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/configmaps/orders-config", nil, true, 16<<10)
+	if b.Profile.Effective().Mode != "demo" {
+		return nil, errors.New("demo ConfigMap tool is disabled for external profiles")
+	}
+	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+b.namespace()+"/configmaps/orders-config", nil, true, 16<<10)
 	if err != nil {
 		return nil, err
 	}
@@ -172,34 +178,35 @@ func (b Backend) OrdersConfig(ctx context.Context) (json.RawMessage, error) {
 }
 
 func (b Backend) Service(ctx context.Context, name string) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
-	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/services/"+name, nil, true, 64<<10)
+	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+b.namespace()+"/services/"+name, nil, true, 64<<10)
 	return sanitizeKubernetes(raw, err)
 }
 
 func (b Backend) EndpointSlices(ctx context.Context, name string) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
-	raw, err := b.get(ctx, b.Kubernetes, "/apis/discovery.k8s.io/v1/namespaces/"+namespace+"/endpointslices", url.Values{"labelSelector": {"kubernetes.io/service-name=" + name}, "limit": {"20"}}, true, 128<<10)
+	raw, err := b.get(ctx, b.Kubernetes, "/apis/discovery.k8s.io/v1/namespaces/"+b.namespace()+"/endpointslices", url.Values{"labelSelector": {"kubernetes.io/service-name=" + name}, "limit": {"20"}}, true, 128<<10)
 	return sanitizeKubernetes(raw, err)
 }
 
 func (b Backend) Pods(ctx context.Context, name string) (json.RawMessage, error) {
-	if !workload(name) {
+	selector, ok := b.Profile.PodSelector(name)
+	if !ok {
 		return nil, errors.New("unknown demo workload")
 	}
-	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/pods", url.Values{"labelSelector": {"app=" + name}, "limit": {"20"}}, true, 256<<10)
+	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+b.namespace()+"/pods", url.Values{"labelSelector": {selector}, "limit": {"20"}}, true, 256<<10)
 	return sanitizeKubernetes(raw, err)
 }
 
 func (b Backend) Events(ctx context.Context, name string) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
-	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+namespace+"/events", url.Values{"limit": {"100"}}, true, 256<<10)
+	raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+b.namespace()+"/events", url.Values{"limit": {"100"}}, true, 256<<10)
 	if err != nil {
 		return nil, err
 	}
@@ -256,17 +263,32 @@ func scrub(v any) any {
 }
 
 func (b Backend) Logs(ctx context.Context, name, pod string, lines int) (string, error) {
-	if !workload(name) || !validPod(pod, name) {
-		return "", errors.New("invalid demo pod")
+	if !b.workload(name) || !validPod(pod, name) {
+		return "", errors.New("invalid scoped pod")
 	}
 	if lines < 1 || lines > 100 {
 		return "", errors.New("lines must be between 1 and 100")
+	}
+	if b.Profile.Effective().Mode == "external" {
+		key, value, _ := b.Profile.PodLabel(name)
+		raw, err := b.get(ctx, b.Kubernetes, "/api/v1/namespaces/"+b.namespace()+"/pods/"+pod, nil, true, 64<<10)
+		if err != nil {
+			return "", err
+		}
+		var identity struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(raw, &identity) != nil || identity.Metadata.Labels[key] != value {
+			return "", errors.New("pod does not match the configured selector")
+		}
 	}
 	u, err := url.Parse(b.Kubernetes)
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "", errors.New("Kubernetes upstream is not configured")
 	}
-	u.Path = "/api/v1/namespaces/" + namespace + "/pods/" + pod + "/log"
+	u.Path = "/api/v1/namespaces/" + b.namespace() + "/pods/" + pod + "/log"
 	u.RawQuery = url.Values{"tailLines": {fmt.Sprint(lines)}, "limitBytes": {"65536"}, "timestamps": {"true"}}.Encode()
 	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
@@ -306,7 +328,7 @@ func validPod(pod, workloadName string) bool {
 }
 
 func (b Backend) Metric(ctx context.Context, name, metric string) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) || b.Profile.Effective().Mode != "demo" {
 		return nil, errors.New("unknown demo workload")
 	}
 	query, err := metricQuery(name, metric)
@@ -334,7 +356,7 @@ func metricQuery(name, metric string) (string, error) {
 }
 
 func (b Backend) MetricWindow(ctx context.Context, name, metric string, start, end time.Time) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) || b.Profile.Effective().Mode != "demo" {
 		return nil, errors.New("unknown demo workload")
 	}
 	if err := ValidateWindow(start, end); err != nil {
@@ -357,7 +379,7 @@ func ValidateWindow(start, end time.Time) error {
 }
 
 func (b Backend) LogQuery(ctx context.Context, name string, minutes, limit int) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
 	if minutes < 1 || minutes > 60 || limit < 1 || limit > 100 {
@@ -368,7 +390,7 @@ func (b Backend) LogQuery(ctx context.Context, name string, minutes, limit int) 
 }
 
 func (b Backend) LogWindow(ctx context.Context, name string, start, end time.Time, limit int) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
 	if err := ValidateWindow(start, end); err != nil {
@@ -377,11 +399,18 @@ func (b Backend) LogWindow(ctx context.Context, name string, start, end time.Tim
 	if limit < 1 || limit > 100 {
 		return nil, errors.New("log limit out of range")
 	}
-	q := url.Values{"query": {fmt.Sprintf(`{service_name=%q}`, name)}, "start": {fmt.Sprint(start.UnixNano())}, "end": {fmt.Sprint(end.UnixNano())}, "limit": {fmt.Sprint(limit)}, "direction": {"BACKWARD"}}
+	selector := fmt.Sprintf(`{service_name=%q}`, name)
+	if b.Profile.Effective().Mode == "external" {
+		selector = fmt.Sprintf(`{service_name=%q,k8s_namespace_name=%q}`, name, b.namespace())
+	}
+	q := url.Values{"query": {selector}, "start": {fmt.Sprint(start.UnixNano())}, "end": {fmt.Sprint(end.UnixNano())}, "limit": {fmt.Sprint(limit)}, "direction": {"BACKWARD"}}
 	return b.get(ctx, b.Loki, "/loki/api/v1/query_range", q, false, 128<<10)
 }
 
 func (b Backend) Trace(ctx context.Context, id string) (json.RawMessage, error) {
+	if b.Profile.Effective().Mode == "external" {
+		return nil, errors.New("direct trace reads are unavailable for external profiles")
+	}
 	if len(id) < 16 || len(id) > 32 {
 		return nil, errors.New("trace ID must be 16 to 32 hex characters")
 	}
@@ -398,7 +427,7 @@ func (b Backend) SearchTraces(ctx context.Context, name string, minutes int) (js
 }
 
 func (b Backend) SearchTracesFiltered(ctx context.Context, name, filter string, minutes int) (json.RawMessage, error) {
-	if !workload(name) {
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
 	if minutes < 1 || minutes > 60 {
@@ -413,7 +442,10 @@ func (b Backend) SearchTracesWindow(ctx context.Context, name string, start, end
 }
 
 func (b Backend) SearchTracesWindowFiltered(ctx context.Context, name, filter string, start, end time.Time) (json.RawMessage, error) {
-	if !workload(name) {
+	if b.Profile.Effective().Mode == "external" {
+		return nil, errors.New("trace search is unavailable for external profiles")
+	}
+	if !b.workload(name) {
 		return nil, errors.New("unknown demo workload")
 	}
 	if err := ValidateWindow(start, end); err != nil {

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"incidentpilot/internal/onboarding"
 )
 
 const (
@@ -16,6 +18,7 @@ const (
 )
 
 type Config struct {
+	Onboarding        onboarding.Profile
 	HTTPAddr          string
 	ShutdownTimeout   time.Duration
 	DatabaseURL       string
@@ -42,6 +45,11 @@ func Parse(getenv func(string) string) (Config, error) {
 		HTTPAddr:        defaultHTTPAddr,
 		ShutdownTimeout: defaultShutdownTimeout,
 	}
+	profile, err := onboarding.Parse(getenv("INCIDENTPILOT_ONBOARDING_PROFILE"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.Onboarding = profile
 	if value := getenv("INCIDENTPILOT_HTTP_ADDR"); value != "" {
 		cfg.HTTPAddr = value
 	}

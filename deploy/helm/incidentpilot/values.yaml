@@ -21,6 +21,9 @@ runtime:
   repository: YASHMAHAKAL/incident-pilot
   remediationPath: deploy/helm/incidentpilot/values.yaml
   otlpEndpoint: http://opentelemetry-collector.incidentpilot-observability.svc.cluster.local:4318
+  prometheusURL: http://prometheus.incidentpilot-observability.svc.cluster.local:9090
+  lokiURL: http://loki.incidentpilot-observability.svc.cluster.local:3100
+  tempoURL: http://tempo.incidentpilot-observability.svc.cluster.local:3200
 
 postgresql:
   enabled: true
@@ -32,6 +35,11 @@ postgresql:
     limits: {cpu: "1", memory: 2Gi}
 
 demoNamespace: incidentpilot-demo
+
+# External mode scopes read-only investigation to existing workloads. Optional
+# Kubernetes OOM and image-pull verifiers do not enable remediation.
+onboarding:
+  mode: demo
 
 demo:
   enabled: true

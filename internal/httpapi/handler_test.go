@@ -18,6 +18,7 @@ import (
 
 	"incidentpilot/internal/evidence"
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/onboarding"
 	"incidentpilot/internal/remediation"
 )
 
@@ -124,6 +125,30 @@ func TestWebhookValidatesAndNormalizes(t *testing.T) {
 	}
 	if store.signals[1].Status != incident.StatusResolved || store.signals[1].ResolvedAt == nil || !store.signals[1].ResolvedAt.Equal(time.Date(2026, 9, 19, 0, 2, 0, 0, time.UTC)) {
 		t.Fatalf("unexpected resolved signal: %+v", store.signals[1])
+	}
+}
+
+func TestExternalProfileRejectsUnlistedAlertBeforePersistence(t *testing.T) {
+	profile, err := onboarding.Parse(`{"mode":"external","namespace":"payments","workloads":[{"name":"checkout","container":"checkout","podLabelKey":"app","podLabelValue":"checkout"}],"alerts":[{"name":"CheckoutErrors","workload":"checkout"}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{}
+	handler := HandlerWithProfile(store, nil, nil, nil, "long-local-test-token", "", profile, nil)
+	if response := request(handler, testWebhook("firing"), "long-local-test-token"); response.Code != http.StatusBadRequest {
+		t.Fatalf("out-of-scope alert returned %d", response.Code)
+	}
+	if len(store.signals) != 0 {
+		t.Fatal("out-of-scope alert reached storage")
+	}
+	body := bytes.ReplaceAll(testWebhook("firing"), []byte("DemoCheckoutErrors"), []byte("CheckoutErrors"))
+	body = bytes.ReplaceAll(body, []byte("incidentpilot-demo"), []byte("payments"))
+	body = bytes.ReplaceAll(body, []byte("frontend"), []byte("checkout"))
+	if response := request(handler, body, "long-local-test-token"); response.Code != http.StatusAccepted {
+		t.Fatalf("scoped alert returned %d: %s", response.Code, response.Body.String())
+	}
+	if len(store.signals) != 1 {
+		t.Fatalf("expected one scoped incident, got %d", len(store.signals))
 	}
 }
 

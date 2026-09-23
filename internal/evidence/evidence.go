@@ -7,10 +7,11 @@ import (
 	"time"
 
 	"incidentpilot/internal/incident"
+	"incidentpilot/internal/onboarding"
 )
 
 var ErrWindowUnavailable = errors.New("incident telemetry window is outside the last 24 hours")
-var ErrUnsupportedIncident = errors.New("incident is outside the allowlisted demo workload")
+var ErrUnsupportedIncident = errors.New("incident is outside the configured onboarding scope")
 
 // Record is an independently inspectable observation, not an RCA or model claim.
 type Record struct {
@@ -60,9 +61,10 @@ type Report struct {
 }
 
 type Collector struct {
-	Caller Caller
-	Store  Store
-	Now    func() time.Time
+	Caller  Caller
+	Store   Store
+	Now     func() time.Time
+	Profile onboarding.Profile
 }
 
 func Window(inc incident.Incident, now time.Time) (time.Time, time.Time, error) {

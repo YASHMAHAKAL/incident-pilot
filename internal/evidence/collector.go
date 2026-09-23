@@ -57,7 +57,8 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 	if err != nil {
 		return Report{}, err
 	}
-	if inc.Namespace != "incidentpilot-demo" || !allowedWorkload(inc.Service) || !allowedWorkload(workload) {
+	profile := c.Profile.Effective()
+	if !profile.AllowsIncident(inc.Namespace, inc.Service, inc.AlertName) || !profile.AllowsWorkload(workload) {
 		return Report{}, ErrUnsupportedIncident
 	}
 	ctx, span := otel.Tracer("incidentpilot/evidence").Start(ctx, "evidence.collect")
@@ -71,7 +72,7 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 	plan := []planItem{
 		{tool: "kubernetes_get_deployment", source: "kubernetes/deployment", arguments: map[string]any{"workload": workload}},
 	}
-	if workload == "orders-api" {
+	if profile.Mode == "demo" && workload == "orders-api" {
 		plan = append(plan, planItem{tool: "kubernetes_get_orders_config", source: "kubernetes/configmap", resourceRef: "incidentpilot-demo/configmap/orders-config", arguments: map[string]any{}})
 	}
 	plan = append(plan, []planItem{
@@ -79,10 +80,14 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 		{tool: "kubernetes_get_endpointslices", source: "kubernetes/endpointslices", arguments: map[string]any{"workload": workload}},
 		{tool: "kubernetes_get_pods", source: "kubernetes/pods", arguments: map[string]any{"workload": workload}},
 		{tool: "kubernetes_get_events", source: "kubernetes/events", arguments: map[string]any{"workload": workload}},
-		{tool: "prometheus_get_demo_metric_range", source: "prometheus/range", arguments: map[string]any{"workload": workload, "metric": metric, "start": startValue, "end": endValue}, timed: true},
-		{tool: "loki_get_demo_logs", source: "loki", arguments: map[string]any{"workload": workload, "start": startValue, "end": endValue, "limit": 20}, timed: true},
-		{tool: "tempo_search_demo_traces", source: "tempo/search", arguments: map[string]any{"workload": workload, "filter": incidentTraceFilter(inc), "start": startValue, "end": endValue}, timed: true},
 	}...)
+	if profile.Mode == "demo" {
+		plan = append(plan, planItem{tool: "prometheus_get_demo_metric_range", source: "prometheus/range", arguments: map[string]any{"workload": workload, "metric": metric, "start": startValue, "end": endValue}, timed: true})
+	}
+	plan = append(plan, planItem{tool: "loki_get_demo_logs", source: "loki", arguments: map[string]any{"workload": workload, "start": startValue, "end": endValue, "limit": 20}, timed: true})
+	if profile.Mode == "demo" {
+		plan = append(plan, planItem{tool: "tempo_search_demo_traces", source: "tempo/search", arguments: map[string]any{"workload": workload, "filter": incidentTraceFilter(inc), "start": startValue, "end": endValue}, timed: true})
+	}
 	for _, item := range plan {
 		observation, callErr := c.Caller.Call(ctx, item.tool, item.arguments)
 		if callErr != nil {
@@ -95,8 +100,13 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 			continue
 		}
 		report.Evidence = append(report.Evidence, record)
-		if item.tool == "kubernetes_get_pods" && workload == "orders-api" {
-			if pod := crashLoopPod(record.Payload, workload); pod != "" {
+		if item.tool == "kubernetes_get_pods" {
+			container := workload
+			if profile.Mode == "external" {
+				configured, _ := profile.Workload(workload)
+				container = configured.Container
+			}
+			if pod := crashLoopPod(record.Payload, workload, container); pod != "" {
 				logItem := planItem{tool: "kubernetes_get_pod_logs", source: "kubernetes/pod_logs", resourceRef: inc.Namespace + "/" + pod, arguments: map[string]any{"workload": workload, "pod": pod, "lines": 20}}
 				logObservation, logErr := c.Caller.Call(ctx, logItem.tool, logItem.arguments)
 				if logErr != nil {
@@ -108,7 +118,7 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 				}
 			}
 		}
-		if item.tool == "tempo_search_demo_traces" {
+		if item.tool == "tempo_search_demo_traces" && profile.Mode == "demo" {
 			if traceID := firstTraceID(record.Payload); traceID != "" {
 				traceItem := planItem{tool: "tempo_get_trace", source: "tempo", arguments: map[string]any{"trace_id": traceID}, timed: true}
 				traceObservation, traceErr := c.Caller.Call(ctx, traceItem.tool, traceItem.arguments)
@@ -122,7 +132,7 @@ func (c Collector) collect(ctx context.Context, inc incident.Incident, workload,
 			}
 		}
 	}
-	if includeChanges {
+	if includeChanges && profile.Mode == "demo" {
 		c.collectChanges(ctx, inc, collectionID, start, end, &report)
 	}
 	if len(report.Evidence) == 0 {
@@ -144,10 +154,6 @@ func incidentTraceFilter(inc incident.Incident) string {
 	default:
 		return ""
 	}
-}
-
-func allowedWorkload(name string) bool {
-	return name == "frontend" || name == "orders-api" || name == "payments-api"
 }
 
 func makeRecord(inc incident.Incident, collectionID, workload string, item planItem, obs ToolObservation, start, end time.Time) (Record, error) {
@@ -188,7 +194,7 @@ func makeRecord(inc incident.Incident, collectionID, workload string, item planI
 	return record, nil
 }
 
-func crashLoopPod(raw json.RawMessage, workload string) string {
+func crashLoopPod(raw json.RawMessage, workload, container string) string {
 	var pods struct {
 		Items []struct {
 			Metadata struct {
@@ -215,7 +221,7 @@ func crashLoopPod(raw json.RawMessage, workload string) string {
 	}
 	for _, pod := range pods.Items {
 		for _, status := range pod.Status.ContainerStatuses {
-			if status.Name == workload && (status.State.Waiting.Reason == "CrashLoopBackOff" || (status.State.Terminated.Reason == "Error" && status.RestartCount > 0)) && validPodName(pod.Metadata.Name, workload) {
+			if status.Name == container && (status.State.Waiting.Reason == "CrashLoopBackOff" || (status.State.Terminated.Reason == "Error" && status.RestartCount > 0)) && validPodName(pod.Metadata.Name, workload) {
 				return pod.Metadata.Name
 			}
 		}

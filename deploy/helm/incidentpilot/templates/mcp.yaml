@@ -41,6 +41,10 @@ spec:
             - name: INCIDENTPILOT_REMEDIATION_TOKEN
               valueFrom: {secretKeyRef: {name: {{ .Values.runtime.existingSecret }}, key: remediation_token}}
             - {name: INCIDENTPILOT_REMEDIATION_ENDPOINT, value: "http://incidentpilot-api.{{ .Release.Namespace }}.svc.cluster.local:8080/api/v1/remediations"}
+            - {name: INCIDENTPILOT_ONBOARDING_PROFILE, value: {{ .Values.onboarding | toJson | quote }}}
+            - {name: INCIDENTPILOT_PROMETHEUS_URL, value: {{ .Values.runtime.prometheusURL | quote }}}
+            - {name: INCIDENTPILOT_LOKI_URL, value: {{ .Values.runtime.lokiURL | quote }}}
+            - {name: INCIDENTPILOT_TEMPO_URL, value: {{ .Values.runtime.tempoURL | quote }}}
             - {name: OTEL_EXPORTER_OTLP_ENDPOINT, value: {{ .Values.runtime.otlpEndpoint | quote }}}
           ports: [{name: http, containerPort: 8081}]
           readinessProbe: {httpGet: {path: /healthz, port: http}}

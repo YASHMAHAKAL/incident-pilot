@@ -2,6 +2,8 @@
 
 Phase 14 keeps the local architecture boundaries on EKS. Terraform owns the VPC, two-AZ subnet/routing layout, NAT/Internet gateways, EKS control plane, private managed nodes, IAM, KMS encryption, control-plane logs, and security group. Argo CD owns the IncidentPilot Helm release plus pinned Prometheus/Grafana, Loki, Tempo, and OpenTelemetry Collector applications.
 
+When installing into a cluster that already has an application, use the [external onboarding profile](onboarding-external-cluster.md) and deploy only the IncidentPilot chart and the dependencies you actually need. The demo application and its alert rules are disabled in that profile.
+
 No repository command automatically applies Terraform. EKS, NAT gateways, nodes, public IPv4 addresses, storage, and telemetry retention incur AWS charges.
 
 ## 1. Validate and review infrastructure

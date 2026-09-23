@@ -1,0 +1,28 @@
+# Replace these examples before deployment. The application namespace exists already.
+demo:
+  enabled: false
+
+onboarding:
+  mode: external
+  namespace: payments
+  workloads:
+    - name: checkout
+      container: checkout
+      podLabelKey: app.kubernetes.io/name
+      podLabelValue: checkout
+    - name: payment-gateway
+      container: payment-gateway
+      podLabelKey: app.kubernetes.io/name
+      podLabelValue: payment-gateway
+  alerts:
+    - name: CheckoutErrors
+      workload: checkout
+    - name: PaymentGatewayUnavailable
+      workload: payment-gateway
+  verifiers:
+    - kubernetes_oom
+    - image_pull
+
+runtime:
+  environment: production
+  lokiURL: https://loki.example.internal

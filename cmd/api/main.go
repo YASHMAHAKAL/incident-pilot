@@ -78,10 +78,10 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if err != nil {
 			return err
 		}
-		collector = &evidence.Collector{Caller: caller, Store: evidenceStore}
+		collector = &evidence.Collector{Caller: caller, Store: evidenceStore, Profile: cfg.Onboarding}
 	}
 	var remediator *remediation.Service
-	if cfg.RemediationToken != "" {
+	if cfg.RemediationToken != "" && cfg.Onboarding.Mode == "demo" {
 		evaluator, err := policy.New(ctx)
 		if err != nil {
 			return err
@@ -97,7 +97,7 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		remediator = &remediation.Service{Source: postgres, Store: postgres, Evaluator: evaluator, Executor: executor, Config: remediation.Config{Environment: cfg.Environment, Repository: cfg.Repository, AllowedPath: cfg.RemediationPath}}
 	}
 	server := &http.Server{
-		Handler:           httpapi.HandlerWithServices(store, evidenceStore, collector, remediator, cfg.WebhookToken, cfg.RemediationToken, logger),
+		Handler:           httpapi.HandlerWithProfile(store, evidenceStore, collector, remediator, cfg.WebhookToken, cfg.RemediationToken, cfg.Onboarding, logger),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	shutdownDone := make(chan struct{})

@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "onboarding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["demo", "external"]},
+        "namespace": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63,
+          "not": {"anyOf": [{"enum": ["default", "incidentpilot-system", "incidentpilot-observability"]}, {"pattern": "^kube-"}]}},
+        "workloads": {
+          "type": "array", "maxItems": 20,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "container", "podLabelKey", "podLabelValue"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63},
+              "container": {"type": "string", "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$", "maxLength": 63},
+              "podLabelKey": {"type": "string", "minLength": 1, "maxLength": 253},
+              "podLabelValue": {"type": "string", "minLength": 1, "maxLength": 63}
+            }
+          }
+        },
+        "alerts": {
+          "type": "array", "maxItems": 50,
+          "items": {
+            "type": "object", "additionalProperties": false,
+            "required": ["name", "workload"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[A-Za-z_:][A-Za-z0-9_:]*$", "maxLength": 128},
+              "workload": {"type": "string", "minLength": 1, "maxLength": 63}
+            }
+          }
+        },
+        "verifiers": {"type": "array", "maxItems": 2, "uniqueItems": true, "items": {"enum": ["kubernetes_oom", "image_pull"]}}
+      }
+    }
+  },
+  "allOf": [{
+    "if": {"properties": {"onboarding": {"properties": {"mode": {"const": "external"}}}}},
+    "then": {
+      "properties": {
+        "onboarding": {"required": ["namespace", "workloads", "alerts"], "properties": {"workloads": {"minItems": 1}, "alerts": {"minItems": 1}}},
+        "demo": {"properties": {"enabled": {"const": false}}}
+      }
+    }
+  }, {
+    "if": {"properties": {"onboarding": {"properties": {"mode": {"const": "demo"}}}}},
+    "then": {"properties": {"demoNamespace": {"const": "incidentpilot-demo"}, "onboarding": {"properties": {"namespace": {"const": ""}, "workloads": {"maxItems": 0}, "alerts": {"maxItems": 0}, "verifiers": {"maxItems": 0}}}}}
+  }]
+}
